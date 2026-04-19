@@ -19,8 +19,11 @@ import type { ToolContext } from "./tools.js";
 import { runSetup, printModelList, printProviderList } from "./setup.js";
 import { runTurn } from "./agent.js";
 import { banner, errorLine, infoLine, promptPrefix, successLine, warnLine } from "./ui.js";
+import { createSession, formatStatus, formatHistory, type SessionState } from "./session.js";
+import { TOOL_DEFS } from "./tools.js";
+import { CancelError } from "./approval.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 function usage(): void {
   console.log(`
@@ -42,10 +45,12 @@ ${chalk.bold("Flags (interactive):")}
   --provider <name>             override provider for this run (gemini|claude|openai|ollama)
   --model <id>                  override model for this run
   --yes                         auto-approve dangerous tools
+  --yes-unsafe                  auto-approve ALL tools including destructive
 
 ${chalk.bold("Examples:")}
   agentic
   agentic "fix the nginx config in ./conf.d"
+  atx "prompt"
   agentic --provider ollama --model qwen2.5:7b
   agentic setup
 `);
@@ -58,18 +63,20 @@ interface ParsedArgs {
   providerOverride?: ProviderName;
   modelOverride?: string;
   yes: boolean;
+  yesUnsafe: boolean;
   help: boolean;
   version: boolean;
   rest: string[];
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const out: ParsedArgs = { yes: false, help: false, version: false, rest: [] };
+  const out: ParsedArgs = { yes: false, yesUnsafe: false, help: false, version: false, rest: [] };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--help" || a === "-h") out.help = true;
     else if (a === "--version" || a === "-v") out.version = true;
+    else if (a === "--yes-unsafe") out.yesUnsafe = true;
     else if (a === "--yes" || a === "-y") out.yes = true;
     else if (a === "--cwd") out.cwd = argv[++i];
     else if (a === "--provider") out.providerOverride = argv[++i] as ProviderName;
@@ -144,11 +151,20 @@ async function main(): Promise<void> {
 
   const ctx: ToolContext = { cwd };
   const history: Message[] = [];
+  const session = createSession(cfg, provider.name, ctx.cwd, args.yesUnsafe);
 
   if (args.prompt) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const controller = new AbortController();
     try {
-      await runTurn({ cfg, provider, ctx, rl, history }, args.prompt);
+      await runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: controller.signal }, args.prompt);
+    } catch (e) {
+      if (e instanceof CancelError || (e as Error).name === "CancelError") {
+        controller.abort();
+        console.log(warnLine("(cancelled)"));
+      } else {
+        throw e;
+      }
     } finally {
       rl.close();
     }
@@ -158,10 +174,11 @@ async function main(): Promise<void> {
   console.log(banner(provider.name, resolveModel(cfg), ctx.cwd));
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  rl.on("SIGINT", () => {
+  function onIdleSigint() {
     console.log(infoLine("\n(Ctrl+C) type /exit to quit"));
     rl.prompt();
-  });
+  }
+  rl.on("SIGINT", onIdleSigint);
 
   const loop = async () => {
     rl.setPrompt(promptPrefix(ctx.cwd));
@@ -175,16 +192,32 @@ async function main(): Promise<void> {
     if (!input) { await loop(); continue; }
 
     if (input.startsWith("/")) {
-      const done = await handleSlash(input, { cfg, ctx, history });
+      const done = await handleSlash(input, { cfg, ctx, history, session });
       if (done === "exit") break;
       await loop();
       continue;
     }
 
+    rl.removeListener("SIGINT", onIdleSigint);
+    const controller = new AbortController();
+    const onTurnSigint = () => {
+      controller.abort();
+      console.log(infoLine("(^C — cancelling after current tool)"));
+    };
+    rl.on("SIGINT", onTurnSigint);
+
     try {
-      await runTurn({ cfg, provider, ctx, rl, history }, input);
+      await runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: controller.signal }, input);
     } catch (e) {
-      console.log(errorLine((e as Error).message));
+      if (e instanceof CancelError || (e as Error).name === "CancelError") {
+        controller.abort();
+        console.log(warnLine("(cancelled)"));
+      } else {
+        console.log(errorLine((e as Error).message));
+      }
+    } finally {
+      rl.removeListener("SIGINT", onTurnSigint);
+      rl.on("SIGINT", onIdleSigint);
     }
     await loop();
   }
@@ -201,6 +234,7 @@ interface SlashCtx {
   cfg: Config;
   ctx: ToolContext;
   history: Message[];
+  session: SessionState;
 }
 
 async function handleSlash(input: string, s: SlashCtx): Promise<"exit" | void> {
@@ -213,6 +247,9 @@ async function handleSlash(input: string, s: SlashCtx): Promise<"exit" | void> {
       console.log(`
 ${chalk.bold("Slash commands:")}
   /help                       show this help
+  /status                     show current session status
+  /history                    show conversation history and tool calls
+  /tools                      list all available tools and their approval status
   /clear                      clear conversation history
   /cwd                        show current working directory
   /cd <path>                  change working directory
@@ -220,7 +257,6 @@ ${chalk.bold("Slash commands:")}
   /model <id>                 switch model
   /models                     list models for current provider
   /providers                  list all providers
-  /approve on|off             toggle auto-approval of dangerous tools
   /config                     print config path and settings
   /save                       persist current provider/model/approve to config file
   /exit                       quit
@@ -252,6 +288,8 @@ ${chalk.bold("Slash commands:")}
         return;
       }
       s.cfg.provider = name;
+      s.session.provider = name;
+      s.session.model = resolveModel(s.cfg);
       console.log(successLine(`provider=${name} model=${resolveModel(s.cfg)} (use /save to persist)`));
       return;
     }
@@ -259,6 +297,7 @@ ${chalk.bold("Slash commands:")}
       const id = rest.join(" ");
       if (!id) { console.log(errorLine("usage: /model <id>")); return; }
       setModel(s.cfg, id);
+      s.session.model = id;
       console.log(successLine(`model=${id} (use /save to persist)`));
       return;
     }
@@ -268,14 +307,22 @@ ${chalk.bold("Slash commands:")}
     case "providers":
       printProviderList();
       return;
-    case "approve": {
-      const v = rest[0];
-      if (v === "on") s.cfg.autoApprove = true;
-      else if (v === "off") s.cfg.autoApprove = false;
-      else { console.log(errorLine("usage: /approve on|off")); return; }
-      console.log(successLine(`autoApprove=${s.cfg.autoApprove} (use /save to persist)`));
+    case "status":
+      console.log(formatStatus(s.session));
       return;
-    }
+    case "history":
+      console.log(formatHistory(s.session));
+      return;
+    case "tools":
+      console.log(chalk.bold("Available Tools:"));
+      for (const t of TOOL_DEFS) {
+        const allowed = s.session.alwaysAllow.has(t.name) ? chalk.green("(always allow)") : "";
+        console.log(`  ${chalk.cyan(t.name)} ${allowed}`);
+      }
+      return;
+    case "approve":
+      console.log(warnLine("/approve is deprecated. Use --yes at launch (auto-approve safe+dangerous) or --yes-unsafe (adds destructive). During a session, press 'a' in the approval prompt to always-allow a specific tool type."));
+      return;
     case "save":
       saveConfig(s.cfg);
       console.log(successLine(`saved to ${configPath()}`));

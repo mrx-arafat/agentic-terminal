@@ -1,10 +1,11 @@
 {
   "name": "agentic-terminal",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Folder-scoped AI terminal agent. Like Warp AI but open-source and uses your own Gemini or Claude API key.",
   "type": "module",
   "bin": {
     "agentic": "bin/agentic.js",
+    "atx": "bin/agentic.js",
     "aterm": "bin/agentic.js",
     "agentic-terminal": "bin/agentic.js"
   },
@@ -58,6 +59,9 @@
     "marked-terminal": "^7.2.0",
     "openai": "^4.67.0",
     "ora": "^8.1.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.0.0"
   },
   "devDependencies": {
     "@types/marked-terminal": "^6.1.1",

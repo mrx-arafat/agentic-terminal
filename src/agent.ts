@@ -5,7 +5,10 @@ import type { Config } from "./config.js";
 import type { Provider } from "./providers/types.js";
 import type { Message, ToolCall } from "./providers/types.js";
 import { TOOL_DEFS, TOOL_HANDLERS, findTool, type ToolContext } from "./tools.js";
-import { confirm, errorLine, renderMarkdown, toolLine, toolResult, warnLine } from "./ui.js";
+import { errorLine, renderMarkdown, toolLine, toolResult, warnLine, suggestForError, infoLine } from "./ui.js";
+import { type SessionState, recordTurn } from "./session.js";
+import { classify } from "./sensitivity.js";
+import { requestApproval, CancelError } from "./approval.js";
 
 export interface AgentDeps {
   cfg: Config;
@@ -13,6 +16,8 @@ export interface AgentDeps {
   ctx: ToolContext;
   rl: readline.Interface;
   history: Message[];
+  session: SessionState;
+  abortSignal: AbortSignal;
 }
 
 export function buildSystemPrompt(ctx: ToolContext): string {
@@ -28,9 +33,10 @@ export function buildSystemPrompt(ctx: ToolContext): string {
 }
 
 export async function runTurn(deps: AgentDeps, userInput: string): Promise<void> {
-  const { cfg, provider, ctx, rl, history } = deps;
+  const { cfg, provider, ctx, rl, history, session, abortSignal } = deps;
 
   history.push({ role: "user", content: userInput });
+  const toolCallsForTurn: { name: string; argsPreview: string }[] = [];
 
   const systemMsg: Message = { role: "system", content: buildSystemPrompt(ctx) };
 
@@ -42,8 +48,16 @@ export async function runTurn(deps: AgentDeps, userInput: string): Promise<void>
       spinner.stop();
     } catch (e) {
       spinner.stop();
-      console.log(errorLine((e as Error).message));
+      const msg = (e as Error).message;
+      console.log(errorLine(msg));
+      const suggestion = suggestForError(msg);
+      if (suggestion) console.log(infoLine(suggestion));
       return;
+    }
+
+    if (response.usage) {
+      session.inputTokens += response.usage.inputTokens;
+      session.outputTokens += response.usage.outputTokens;
     }
 
     if (response.text) {
@@ -57,11 +71,18 @@ export async function runTurn(deps: AgentDeps, userInput: string): Promise<void>
     });
 
     if (response.toolCalls.length === 0) {
+      recordTurn(session, userInput, toolCallsForTurn);
       return;
     }
 
     for (const call of response.toolCalls) {
-      const result = await executeTool(call, ctx, rl, cfg);
+      if (abortSignal.aborted) {
+        console.log(warnLine("(cancelled)"));
+        break;
+      }
+      session.toolCallCount++;
+      toolCallsForTurn.push({ name: call.name, argsPreview: JSON.stringify(call.args).slice(0, 50) });
+      const result = await executeTool(call, ctx, rl, cfg, session);
       history.push({
         role: "tool",
         toolCallId: call.id,
@@ -69,8 +90,10 @@ export async function runTurn(deps: AgentDeps, userInput: string): Promise<void>
         result,
       });
     }
+    if (abortSignal.aborted) break;
   }
 
+  recordTurn(session, userInput, toolCallsForTurn);
   console.log(warnLine(`reached max iterations (${cfg.maxIterations}); stopping`));
 }
 
@@ -79,11 +102,10 @@ async function executeTool(
   ctx: ToolContext,
   rl: readline.Interface,
   cfg: Config,
+  session: SessionState,
 ): Promise<string> {
   const def = findTool(call.name);
   const handler = TOOL_HANDLERS[call.name];
-
-  console.log(toolLine(call.name, call.args));
 
   if (!def || !handler) {
     const msg = `unknown tool: ${call.name}`;
@@ -91,12 +113,36 @@ async function executeTool(
     return msg;
   }
 
-  if (def.dangerous && !cfg.autoApprove) {
-    const ok = await confirm(rl, `run this ${call.name}?`, true);
-    if (!ok) {
-      const denied = "denied by user";
-      console.log(errorLine(denied));
-      return denied;
+  const { level, reason } = classify({ tool: call.name, args: call.args });
+
+  if (level === "safe" || session.alwaysAllow.has(call.name)) {
+    console.log(toolLine(call.name, call.args));
+  } else if (cfg.autoApprove && level !== "destructive") {
+    console.log(toolLine(call.name, call.args));
+  } else if (session.yesUnsafe) {
+    console.log(toolLine(call.name, call.args));
+  } else {
+    let res;
+    try {
+      res = await requestApproval({
+        toolName: call.name,
+        argsPreview: JSON.stringify(call.args).slice(0, 50),
+        level,
+        reason,
+        rl
+      });
+    } catch (e) {
+      if (e instanceof CancelError || (e as Error).name === "CancelError") {
+        throw e;
+      }
+      throw e;
+    }
+    if (res.action === "reject") {
+      return "rejected by user";
+    } else if (res.action === "suggest") {
+      return `rejected by user; user suggests: ${res.suggestion}`;
+    } else if (res.action === "approve_always") {
+      session.alwaysAllow.add(call.name);
     }
   }
 

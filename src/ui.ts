@@ -78,3 +78,23 @@ export async function confirm(rl: readline.Interface, msg: string, defaultYes = 
   if (ans === "") return defaultYes;
   return ans === "y" || ans === "yes";
 }
+
+export function suggestForError(msg: string): string | undefined {
+  const lower = msg.toLowerCase();
+  if (lower.includes("401") || lower.includes("auth") || lower.includes("invalid key")) {
+    return "check your API key: run 'agentic setup'";
+  }
+  if (lower.includes("429") || lower.includes("rate limit")) {
+    return "rate limited — wait a minute or switch providers: /provider <name>";
+  }
+  if (lower.includes("econnrefused") || lower.includes("fetch failed") || lower.includes("network")) {
+    return "network error — check your connection or (for Ollama) whether ollama serve is running";
+  }
+  if (lower.includes("command not found") || lower.includes("enoent")) {
+    return "binary missing — install it or check PATH";
+  }
+  if (lower.includes("permission denied") || lower.includes("eacces")) {
+    return "permission denied — try again with sudo (Agentic will prompt) or fix file permissions";
+  }
+  return undefined;
+}

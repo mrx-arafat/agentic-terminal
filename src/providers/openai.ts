@@ -70,6 +70,13 @@ export class OpenAIProvider implements Provider {
       toolCalls.push({ id: tc.id, name: tc.function.name, args });
     }
 
-    return { text: text ?? "", toolCalls };
+    return {
+      text: text ?? "",
+      toolCalls,
+      usage: response.usage ? {
+        inputTokens: response.usage.prompt_tokens,
+        outputTokens: response.usage.completion_tokens,
+      } : undefined,
+    };
   }
 }

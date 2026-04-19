@@ -15,6 +15,7 @@ export type Message =
 export interface ProviderResponse {
   text: string;
   toolCalls: ToolCall[];
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 export interface Provider {

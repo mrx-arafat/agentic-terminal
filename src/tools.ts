@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { needsPty, runInteractive } from "./pty.js";
 
 export interface ToolDef {
   name: string;
@@ -28,8 +29,20 @@ function resolveInside(cwd: string, p: string): string {
 
 async function bash(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
   const command = String(args.command ?? "");
-  const timeout = Number(args.timeout ?? 120000);
+  let timeout = Number(args.timeout ?? 120000);
   if (!command) return "error: command required";
+
+  if (needsPty(command)) {
+    if (!process.stdin.isTTY) {
+      return "error: this command needs an interactive terminal; run it manually";
+    }
+    if (timeout === 120000) timeout = 300000;
+    const res = await runInteractive({ command, cwd: ctx.cwd, timeoutMs: timeout });
+    if (res.error) return `error: ${res.error}`;
+    const parts: string[] = [`exit_code: ${res.exitCode}`];
+    if (res.output) parts.push(`stdout:\n${res.output}`);
+    return truncate(parts.join("\n"));
+  }
 
   return new Promise((resolve) => {
     const child = spawn("bash", ["-lc", command], { cwd: ctx.cwd });

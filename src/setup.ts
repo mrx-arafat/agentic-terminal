@@ -11,7 +11,8 @@ import {
   setModel,
 } from "./config.js";
 import { MODEL_CATALOG, TIER_LABEL, TIER_ORDER, groupByTier } from "./models.js";
-import { question, successLine, infoLine, warnLine } from "./ui.js";
+import { question, successLine, infoLine, warnLine, errorLine } from "./ui.js";
+import { createProvider } from "./providers/factory.js";
 
 const PROVIDER_NAMES: Array<{ key: ProviderName; label: string; needsKey: boolean }> = [
   { key: "gemini", label: "Google Gemini", needsKey: true },
@@ -19,6 +20,36 @@ const PROVIDER_NAMES: Array<{ key: ProviderName; label: string; needsKey: boolea
   { key: "openai", label: "OpenAI", needsKey: true },
   { key: "ollama", label: "Ollama (local, self-hosted)", needsKey: false },
 ];
+
+const PROVIDER_BLURB: Record<ProviderName, string> = {
+  gemini: "Fast, 1M token context, best free tier. Great for DevOps and long-file tasks.",
+  claude: "Most capable and thoughtful. Best for complex reasoning and code review.",
+  openai: "Reliable and widely compatible. Good for general tasks and integrations.",
+  ollama: "Run locally on your machine. No API keys needed, completely private.",
+};
+
+function validateApiKey(provider: ProviderName, key: string): { ok: boolean; reason?: string } {
+  if (!key) return { ok: false, reason: "key is empty" };
+  switch (provider) {
+    case "gemini":
+      if (!/^AIza[0-9A-Za-z_\-]{35}$/.test(key)) {
+        return { ok: false, reason: "Gemini keys start with 'AIza' and are 39 chars" };
+      }
+      return { ok: true };
+    case "claude":
+      if (!/^sk-ant-[a-zA-Z0-9_\-]{50,}$/.test(key)) {
+        return { ok: false, reason: "Claude keys start with 'sk-ant-' and are at least 55 chars" };
+      }
+      return { ok: true };
+    case "openai":
+      if (!/^sk-[a-zA-Z0-9_\-]{20,}$/.test(key)) {
+        return { ok: false, reason: "OpenAI keys start with 'sk-' and are at least 23 chars" };
+      }
+      return { ok: true };
+    default:
+      return { ok: true };
+  }
+}
 
 export async function runSetup(): Promise<void> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -46,12 +77,21 @@ export async function runSetup(): Promise<void> {
         chosen.key === "claude" ? "ANTHROPIC_API_KEY" :
         "OPENAI_API_KEY";
       const masked = existing ? `${existing.slice(0, 4)}…${existing.slice(-4)}` : "none";
-      console.log(infoLine(`\ncurrent key: ${masked}  (or set ${envLabel} env var)`));
+      console.log(infoLine(`\n${PROVIDER_BLURB[chosen.key]}`));
+      console.log(infoLine(`current key: ${masked}  (or set ${envLabel} env var)`));
       const key = await question(rl, `Paste API key (leave empty to keep current): `);
       if (key.trim()) {
+        const validation = validateApiKey(chosen.key, key.trim());
+        if (!validation.ok) {
+          console.log(warnLine(`key doesn't match expected format (${validation.reason}) — continuing anyway`));
+        }
         if (chosen.key === "gemini") cfg.geminiApiKey = key.trim();
         if (chosen.key === "claude") cfg.claudeApiKey = key.trim();
         if (chosen.key === "openai") cfg.openaiApiKey = key.trim();
+      }
+      const testConn = await question(rl, `\nTest connection now? [y/N]: `);
+      if (testConn.trim().toLowerCase().startsWith("y")) {
+        await testConnection(cfg);
       }
     } else {
       const host = await question(rl, `\nOllama host (default ${cfg.ollamaHost}): `);
@@ -127,4 +167,22 @@ export function printProviderList(): void {
     console.log(`  ${chalk.cyan(p.key.padEnd(8))}${p.label.padEnd(32)}${count} models  ${auth}`);
   }
   console.log();
+}
+
+async function testConnection(cfg: Config): Promise<void> {
+  try {
+    const provider = createProvider(cfg);
+    const response = await provider.chat(
+      [{ role: "user", content: "ping" }],
+      []
+    );
+    if (response.text || response.toolCalls !== undefined) {
+      console.log(successLine("connection ok"));
+    } else {
+      console.log(warnLine("connection returned empty response"));
+    }
+  } catch (e) {
+    console.log(errorLine(`connection failed: ${(e as Error).message}`));
+    console.log(infoLine("check your API key or network connection"));
+  }
 }
