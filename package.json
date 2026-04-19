@@ -1,0 +1,68 @@
+{
+  "name": "agentic-terminal",
+  "version": "0.1.0",
+  "description": "Folder-scoped AI terminal agent. Like Warp AI but open-source and uses your own Gemini or Claude API key.",
+  "type": "module",
+  "bin": {
+    "agentic": "bin/agentic.js",
+    "aterm": "bin/agentic.js",
+    "agentic-terminal": "bin/agentic.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node bin/agentic.js",
+    "prepublishOnly": "npm run build",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "agentic",
+    "terminal",
+    "cli",
+    "gemini",
+    "claude",
+    "anthropic",
+    "google",
+    "devops",
+    "warp",
+    "shell",
+    "assistant"
+  ],
+  "author": "mrx-arafat",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mrx-arafat/agentic-terminal.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mrx-arafat/agentic-terminal/issues"
+  },
+  "homepage": "https://github.com/mrx-arafat/agentic-terminal#readme",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "@google/genai": "^1.0.0",
+    "chalk": "^5.3.0",
+    "marked": "^14.1.0",
+    "marked-terminal": "^7.2.0",
+    "openai": "^4.67.0",
+    "ora": "^8.1.0"
+  },
+  "devDependencies": {
+    "@types/marked-terminal": "^6.1.1",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

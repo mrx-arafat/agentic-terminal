@@ -1,0 +1,15 @@
+src
+node_modules
+tsconfig.json
+*.log
+.DS_Store
+.env
+.env.local
+.vscode
+.idea
+.github
+coverage
+test
+tests
+*.test.ts
+*.spec.ts
