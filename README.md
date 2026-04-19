@@ -1,8 +1,8 @@
 # Agentic Terminal
 
-Folder-scoped AI terminal agent. Like Warp AI — but open-source, runs anywhere, uses **your own API key** (Gemini, Claude, OpenAI) or a **self-hosted Ollama** model.
+An open-source, folder-scoped AI terminal agent. `cd` into any project, launch `agentic`, and get a senior DevOps engineer in your terminal — reads files, edits code, runs shell commands, fixes configs, all with your approval.
 
-You `cd` into any folder. You launch `agentic`. The agent works inside that folder like a senior DevOps engineer: reads files, edits code, runs shell commands, greps logs, fixes configs, navigates subfolders — with your approval.
+Bring your own API key (Gemini, Claude, OpenAI) or run fully local with Ollama. Zero telemetry. MIT licensed.
 
 ```
 ~/projects/my-server $ agentic
@@ -16,196 +16,427 @@ You `cd` into any folder. You launch `agentic`. The agent works inside that fold
 ✓ fixed: upstream port mismatched app bind port (was 3000, app on 3001)
 ```
 
-## What's new in v0.2.0
+---
 
-- **Rich approval flow** — per-tool approval with `[y]es / [n]o / [a]lways / [s]uggest alternative / Esc`. Reject with Esc, press `a` to always-allow a tool type for the session.
-- **Sensitive command detection** — bash commands classified as safe / dangerous / destructive. `--yes` auto-approves dangerous, `--yes-unsafe` approves all. Destructive (rm -rf, drop table, force-push) always prompt.
-- **Password-aware execution** — sudo, ssh, docker login, mysql, psql run through PTY so password prompts work.
-- **Session tracking** — `/status` shows provider, model, tool count, token usage; `/history` lists recent turns; `/tools` lists all tools.
-- **Graceful cancellation** — Ctrl+C during a turn cancels cleanly; model sees rejection and can retry with a different approach.
-- **Better setup UX** — per-provider description, API key validation with helpful format hints, optional test-connection.
-- **Binary alias** — use `atx` as an alias (shorter than `agentic`).
+## Table of Contents
 
-## Features
+- [Install](#install)
+- [Quick Start](#quick-start)
+- [What's New in v0.3.0](#whats-new-in-v030)
+- [Features](#features)
+- [Providers](#providers)
+- [Models](#models)
+- [Approval Flow](#approval-flow)
+- [Tools Reference](#tools-reference)
+- [Slash Commands](#slash-commands)
+- [CLI Reference](#cli-reference)
+- [Skills System](#skills-system)
+- [MCP Integration](#mcp-integration)
+- [Project Memory](#project-memory)
+- [Security](#security)
+- [Develop](#develop)
+- [License](#license)
 
-- **Folder-aware** — every tool call runs in your current working directory. `cd` inside the session stays sticky.
-- **Four providers** — Google Gemini, Anthropic Claude, OpenAI, or Ollama (local / self-hosted).
-- **Model catalog** — curated, tiered model lists (small / medium / large / flagship / reasoning). Pick interactively.
-- **Real tools** — `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, `glob`, `cd`.
-- **Smart approval** — interactive approval prompt with multi-tier sensitivity (safe / dangerous / destructive).
-- **One-shot mode** — `agentic "fix the bug"` or `atx "fix the bug"` runs a single prompt and exits. Good for scripts / CI.
-- **Slash commands** — `/model`, `/provider`, `/cd`, `/status`, `/history`, `/tools`, etc. while chatting.
-- **No lock-in** — MIT licensed, bring your own key, zero telemetry.
+---
 
 ## Install
 
 ```bash
-# Run without installing
+# Run without installing (tries immediately)
 npx agentic-terminal
 
 # Install globally
 npm install -g agentic-terminal
-agentic
 ```
 
-Requires Node.js 18+.
+Requires **Node.js 18+**.
 
-## Quick start
+---
+
+## Quick Start
 
 ```bash
-# One-time setup: pick provider, paste API key, pick model
+# 1. One-time setup: pick provider, paste API key, pick model
 agentic setup
 
-# Start in current folder
+# 2. cd into your project
 cd ~/projects/my-app
+
+# 3. Start the agent
 agentic
 
-# One-shot prompt
-agentic "summarize the README and list top 3 TODOs in the code"
+# One-shot prompt (no interactive session)
+agentic "summarize the README and list top 3 TODOs"
 
-# Override provider/model for one run
-agentic --provider ollama --model qwen2.5:7b
-agentic --provider claude --model claude-opus-4-7 --yes
-
-# Use atx alias
-atx "debug the crash in production"
+# Short alias
+atx "debug the crash in production.log"
 ```
 
-## Approval flow
+That's it. The agent will read your files, propose changes, and ask for your approval before anything dangerous runs.
 
-When the agent calls a tool, you see an approval prompt:
+---
 
-```
-[SAFE] read_file({"path":"package.json"})
-  [y]es  [n]o  [a]lways-this-tool  [s]uggest-alternative  Esc=reject: 
-```
+## What's New in v0.3.0
 
-- **[y]** approve and run this tool
-- **[n]** or **Esc** reject; agent gets "rejected by user" and tries a different approach
-- **[a]** approve and add this tool to the session's "always-allow" list (forget on exit)
-- **[s]** reject and type your suggestion (e.g., "use grep instead"); agent reconsiders
+### Skills System
+Give the agent persistent, reusable instructions scoped to a task type. Drop a `SKILL.md` file in `.agentic/skills/` and the agent auto-loads it whenever your input matches its trigger patterns. See [Skills System](#skills-system).
 
-### Sensitivity tiers
+### MCP Integration
+Connect any [Model Context Protocol](https://modelcontextprotocol.io) server — filesystem, databases, GitHub, Slack, anything. Global config at `~/.config/agentic-terminal/mcp.json`, project-level at `.agentic/mcp.json`. See [MCP Integration](#mcp-integration).
 
-Tools are classified as:
+### Project Memory
+The agent now remembers your project across sessions. It detects your stack (Node, Python, Go, Rust, etc.), records which errors it has seen, and tracks tool effectiveness — so it gets smarter the more you use it. See [Project Memory](#project-memory).
 
-- **Safe** — read_file, list_dir, grep, glob, cd. Never prompt.
-- **Dangerous** — bash (generic), write_file, edit_file, npm publish, apt install, curl -X POST, sudo. Prompt unless `--yes`.
-- **Destructive** — rm -rf, git push --force, drop table, chmod 777, curl | bash. Always prompt, even with `--yes`. Use `--yes-unsafe` to skip.
+---
 
-### Auto-approval
+## Features
 
-- `agentic --yes` → auto-approve safe + dangerous tools
-- `agentic --yes-unsafe` → auto-approve all including destructive (use with caution)
-- Inside session, press **[a]** in the approval prompt to always-allow that specific tool for the rest of the session
+| Feature | Description |
+|---------|-------------|
+| **Folder-scoped** | Every tool runs in your `cwd`. `/cd` inside a session stays sticky. |
+| **4 providers** | Gemini, Claude, OpenAI, or Ollama (local/self-hosted). |
+| **Skills** | Auto-triggered reusable instruction sets per task type. |
+| **MCP servers** | Connect external tools via Model Context Protocol. |
+| **Project memory** | Cross-session learning: stack detection, error patterns, tool stats. |
+| **Real tools** | `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, `glob`, `cd`. |
+| **Smart approval** | 3-tier sensitivity (safe / dangerous / destructive) with interactive prompt. |
+| **One-shot mode** | `agentic "prompt"` for scripts and CI pipelines. |
+| **Slash commands** | `/model`, `/provider`, `/cd`, `/skills`, `/status`, `/history`, and more. |
+| **No lock-in** | MIT licensed, no telemetry, your keys stay local. |
 
-## Sensitive commands
-
-Destructive bash patterns that always trigger approval:
-
-- `rm -rf`, `mkfs`, `dd of=/dev/sdX` — filesystem destruction
-- `git push --force`, `git reset --hard`, `git clean -fd` — version control destruction
-- `DROP TABLE`, `TRUNCATE TABLE` — database destruction
-- `chmod 777`, `curl | bash`, `ssh-keyscan >> authorized_keys` — security risks
-
-Dangerous patterns that prompt (or auto-approve with `--yes`):
-
-- `sudo` — any privilege escalation
-- `ssh`, `scp` — remote execution
-- `npm publish` — package publishing
-- `kill -9` — process termination
-- `apt install`, `brew uninstall` — package management
+---
 
 ## Providers
 
-| Provider | Needs key | How to get it |
-|----------|-----------|---------------|
-| `gemini` | ✅ | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
-| `claude` | ✅ | [console.anthropic.com](https://console.anthropic.com/) |
-| `openai` | ✅ | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
-| `ollama` | ❌ | [ollama.com](https://ollama.com/) — runs locally, free |
+| Provider | Key required | How to get one |
+|----------|-------------|----------------|
+| `gemini` | Yes | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| `claude` | Yes | [console.anthropic.com](https://console.anthropic.com/) |
+| `openai` | Yes | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| `ollama` | No | [ollama.com](https://ollama.com/) — runs 100% locally |
 
-Keys are stored in `~/.config/agentic-terminal/config.json` (chmod 600) or loaded from env vars:
+Keys are stored at `~/.config/agentic-terminal/config.json` (chmod 600).
 
-- `GEMINI_API_KEY` / `GOOGLE_API_KEY`
-- `ANTHROPIC_API_KEY` / `CLAUDE_API_KEY`
-- `OPENAI_API_KEY`
+You can also set them as environment variables:
+
+```bash
+export GEMINI_API_KEY=...        # or GOOGLE_API_KEY
+export ANTHROPIC_API_KEY=...     # or CLAUDE_API_KEY
+export OPENAI_API_KEY=...
+```
+
+---
 
 ## Models
 
-Run `agentic models` or `agentic models <provider>` to see the full catalog, grouped by tier:
-
-- **Small / Fast** — cheap, quick, good enough for most tasks
-- **Medium / Balanced** — daily driver
-- **Large / Strong** — hard reasoning, long context
-- **Flagship** — best of each provider
-- **Reasoning** — o-series (OpenAI), DeepSeek R1 (Ollama) — think before they answer
-
-You can also pass any custom model id (useful for fine-tunes or new models).
-
-## Slash commands
-
-Inside the interactive session:
-
-```
-/help                       show all commands
-/status                     show session status (provider, model, cwd, uptime, tokens, always-allow list)
-/history                    show recent conversation turns and their tool calls
-/tools                      list all available tools and their approval status
-/model <id>                 switch model
-/provider <name>            switch provider (gemini|claude|openai|ollama)
-/models                     list models for current provider
-/providers                  list all providers
-/cd <path>                  change working directory
-/cwd                        show current directory
-/clear                      clear conversation history
-/save                       persist current session settings to config
-/config                     show config path + current settings
-/exit                       quit
+```bash
+agentic models              # list models for current provider
+agentic models gemini       # list all Gemini models
+agentic models ollama       # list Ollama models
 ```
 
-## CLI reference
+Models are grouped by tier:
 
-```
-agentic                          start interactive session in current folder
-agentic "prompt here"            one-shot run
-atx "prompt here"                short alias for agentic (0.2.0+)
-agentic setup                    configure provider, API key, model
-agentic providers                list supported providers
-agentic models [provider]        list models for a provider
-agentic config                   print config file path and current settings
-agentic --help                   show help
-agentic --version                show version
+| Tier | Description |
+|------|-------------|
+| **Small / Fast** | Cheap and quick. Good for simple tasks. |
+| **Medium / Balanced** | The daily driver. Best cost/quality ratio. |
+| **Large / Strong** | Hard reasoning, long context. |
+| **Flagship** | The best each provider offers. |
+| **Reasoning** | Think before answering (o-series, DeepSeek R1). |
 
-Flags:
-  --cwd <path>                   start in specific directory
-  --provider <name>              override provider for this run
-  --model <id>                   override model for this run
-  --yes                          auto-approve safe and dangerous tools (destructive still prompt)
-  --yes-unsafe                   auto-approve all tools including destructive (use with caution)
+You can also pass any custom model ID — useful for fine-tunes or newly released models:
+
+```bash
+agentic --model gemini-2.0-flash-exp
 ```
 
-## Tools the agent can call
+---
+
+## Approval Flow
+
+Every tool call goes through a 3-tier approval system before executing.
+
+### Tiers
+
+| Tier | Examples | Default behavior |
+|------|----------|-----------------|
+| **Safe** | `read_file`, `list_dir`, `grep`, `glob`, `cd` | Runs silently, no prompt |
+| **Dangerous** | `bash` (generic), `write_file`, `edit_file`, `sudo`, `curl`, `npm publish` | Prompts — or auto-approves with `--yes` |
+| **Destructive** | `rm -rf`, `git push --force`, `DROP TABLE`, `chmod 777`, `curl \| bash` | Always prompts — even with `--yes`. Use `--yes-unsafe` to skip. |
+
+### Interactive prompt
+
+When a dangerous tool fires, you see:
+
+```
+[DANGEROUS] bash {"cmd":"npm run deploy"}
+  [y]es  [n]o  [a]lways-this-tool  [s]uggest-alternative  Esc=reject:
+```
+
+| Key | Action |
+|-----|--------|
+| `y` | Approve and run |
+| `n` or `Esc` | Reject — agent gets "rejected by user" and tries differently |
+| `a` | Approve and always-allow this tool for the rest of the session |
+| `s` | Reject and type a suggestion; agent reconsiders |
+
+### Auto-approval flags
+
+```bash
+agentic --yes          # auto-approve safe + dangerous (destructive still prompt)
+agentic --yes-unsafe   # auto-approve everything including destructive (use carefully)
+```
+
+---
+
+## Tools Reference
 
 | Tool | What it does | Tier |
-|------|--------------|------|
-| `bash` | Run a shell command in cwd | Dangerous (or destructive if rm -rf, git push --force, etc.) |
+|------|-------------|------|
+| `bash` | Run a shell command in cwd | Dangerous (destructive if rm -rf, force-push, etc.) |
 | `read_file` | Read a file | Safe |
-| `write_file` | Create/overwrite a file | Dangerous |
+| `write_file` | Create or overwrite a file | Dangerous |
 | `edit_file` | Replace a unique string in a file | Dangerous |
-| `list_dir` | List directory entries | Safe |
-| `grep` | Recursive regex search | Safe |
-| `glob` | Find files by name pattern | Safe |
-| `cd` | Change session cwd | Safe |
+| `list_dir` | List directory contents | Safe |
+| `grep` | Recursive regex search across files | Safe |
+| `glob` | Find files matching a pattern | Safe |
+| `cd` | Change session working directory | Safe |
 
-See [Approval flow](#approval-flow) and [Sensitive commands](#sensitive-commands) above for how tiers affect prompting.
+Password-requiring commands (`sudo`, `ssh`, `docker login`, `mysql`, `psql`) run through a PTY so interactive prompts work correctly.
 
-## Security notes
+---
 
-- API keys sit in `~/.config/agentic-terminal/config.json` with `0600` permissions.
-- `bash`, `write_file`, `edit_file` prompt before executing unless `autoApprove` is on.
-- The agent only operates in whatever directory you started it in (plus anywhere you `cd` to).
-- No telemetry. No remote calls beyond the provider you chose.
+## Slash Commands
+
+Available while in an interactive session (`agentic` with no prompt):
+
+```
+/help                    show all commands
+/skills                  list loaded skills
+/skills <name>           show details of a specific skill
+/status                  session status (provider, model, cwd, tokens, uptime)
+/history                 recent conversation turns and tool calls
+/tools                   list all tools and their always-allow status
+/model <id>              switch model mid-session
+/provider <name>         switch provider (gemini|claude|openai|ollama)
+/models                  list models for current provider
+/providers               list all providers
+/cd <path>               change working directory
+/cwd                     show current directory
+/clear                   clear conversation history
+/save                    save current provider/model to config file
+/config                  show config path and current settings
+/exit                    quit
+```
+
+---
+
+## CLI Reference
+
+```
+agentic                        start interactive session in current folder
+agentic "prompt"               one-shot: run prompt and exit
+atx "prompt"                   short alias for agentic
+agentic setup                  configure provider, API key, and model
+agentic providers              list supported providers
+agentic models [provider]      list models for a provider
+agentic config                 print config path and current settings
+agentic --help                 show help
+agentic --version              show version
+
+Flags:
+  --cwd <path>                 start in a specific directory
+  --provider <name>            override provider for this run
+  --model <id>                 override model for this run
+  --yes                        auto-approve safe + dangerous tools
+  --yes-unsafe                 auto-approve all tools including destructive
+```
+
+---
+
+## Skills System
+
+Skills let you encode reusable, task-specific instructions that the agent automatically picks up based on what you type.
+
+### How it works
+
+1. You create a `SKILL.md` file with a YAML frontmatter header
+2. On every turn, the agent checks if your input matches any skill's trigger patterns
+3. If matched, the skill's instructions are injected into the system prompt for that turn
+4. The most specific match (longest trigger pattern) wins
+
+### Creating a skill
+
+```
+.agentic/skills/
+  docker-debug/
+    SKILL.md
+  deploy/
+    SKILL.md
+    scripts/
+      pre-deploy.sh
+    references/
+      checklist.md
+```
+
+**SKILL.md format:**
+
+```markdown
+---
+name: docker-debug
+description: Expert Docker debugging — containers, networks, volumes
+trigger_patterns:
+  - docker
+  - container
+  - "container.*not.*start"
+  - dockerfile
+---
+
+When debugging Docker issues:
+1. Always check `docker ps -a` and `docker logs <container>` first
+2. Inspect with `docker inspect <container>` for network/volume config
+3. For build failures, run `docker build --no-cache` and read the layer output
+4. Check `docker stats` for resource constraints
+```
+
+### Frontmatter fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Unique identifier (used in `/skills <name>`) |
+| `description` | Yes | Short human-readable summary |
+| `trigger_patterns` | Yes | List of strings or regex patterns to match user input |
+| `mcp` | No | Name of an MCP server this skill expects to be available |
+
+### Skill directories
+
+Skills are loaded from two locations and merged (project overrides global by name):
+
+| Location | Scope |
+|----------|-------|
+| `~/.config/agentic-terminal/skills/` | Global — available in every project |
+| `.agentic/skills/` | Project — committed to your repo, shared with your team |
+
+### Using scripts and references
+
+Inside a skill directory, you can add:
+
+- `scripts/` — shell scripts the agent knows about and can run
+- `references/` — markdown files, checklists, runbooks the agent can read
+
+The agent's system prompt will list these files so it knows they exist.
+
+### Listing skills
+
+```bash
+/skills                  # list all loaded skills
+/skills docker-debug     # show trigger patterns and description for a skill
+```
+
+---
+
+## MCP Integration
+
+[Model Context Protocol](https://modelcontextprotocol.io) lets you connect external servers that expose tools — filesystem access, GitHub, databases, Slack, and anything else the community builds.
+
+### Config files
+
+| File | Scope |
+|------|-------|
+| `~/.config/agentic-terminal/mcp.json` | Global — all projects |
+| `.agentic/mcp.json` | Project — overrides global servers by name |
+
+### Config format
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "my-api": {
+      "url": "http://localhost:3100/mcp"
+    }
+  }
+}
+```
+
+### Environment variable substitution
+
+Any `${VAR_NAME}` in string values is replaced with the matching environment variable at runtime. This keeps secrets out of config files.
+
+### Transport types
+
+| Type | Config field | Use when |
+|------|-------------|----------|
+| stdio | `command` + `args` | Most MCP servers (npm packages, local binaries) |
+| HTTP | `url` | Remote or self-hosted MCP servers |
+
+---
+
+## Project Memory
+
+The agent learns about your project and persists that knowledge across sessions.
+
+### What gets stored
+
+Memory lives at `~/.agentic/projects/<project-name>.json` and tracks:
+
+| Field | Description |
+|-------|-------------|
+| `projectType` | Auto-detected stack: `node`, `python`, `go`, `rust`, `java`, `php`, `ruby`, or `unknown` |
+| `commonErrors` | Error patterns seen, suggested fixes, confidence scores, success rates |
+| `toolPatterns` | Which tools work well, average durations, success rates |
+| `projectRules` | Contents of `.agentic-rules.md` if present |
+
+### Stack detection
+
+The agent detects your stack from marker files:
+
+| Marker file | Detected as |
+|-------------|------------|
+| `package.json` | `node` |
+| `pyproject.toml`, `requirements.txt`, `setup.py` | `python` |
+| `go.mod` | `go` |
+| `Cargo.toml` | `rust` |
+| `pom.xml`, `build.gradle` | `java` |
+| `composer.json` | `php` |
+| `Gemfile` | `ruby` |
+
+### Project rules
+
+Create `.agentic-rules.md` in your project root to give the agent standing instructions:
+
+```markdown
+# Project Rules
+
+- Always run `npm test` after editing any `.ts` file
+- Never edit files under `generated/` — they are auto-generated
+- The API lives at `src/api/` — all routes must be registered in `src/api/router.ts`
+- Use `pnpm` not `npm` for all package operations
+```
+
+---
+
+## Security
+
+- API keys stored at `~/.config/agentic-terminal/config.json` with `0600` permissions
+- `bash`, `write_file`, `edit_file` always prompt unless you explicitly pass `--yes` or `--yes-unsafe`
+- Destructive commands **always** prompt regardless of flags
+- The agent only operates in the directory you started it in (or wherever you `/cd` during the session)
+- No telemetry. No analytics. No remote calls beyond the AI provider you chose.
+- MCP `${VAR_NAME}` substitution reads from your environment — secrets never touch config files
+
+---
 
 ## Develop
 
@@ -213,19 +444,60 @@ See [Approval flow](#approval-flow) and [Sensitive commands](#sensitive-commands
 git clone https://github.com/mrx-arafat/agentic-terminal
 cd agentic-terminal
 npm install
-npm run dev          # tsx src/index.ts
-npm run build        # emit dist/
-npm link             # install `agentic` into PATH globally
+
+npm run dev          # run from source with tsx (no build step)
+npm run build        # compile TypeScript → dist/
+npm test             # run test suite (vitest)
+npm test -- --watch  # watch mode
+npm link             # install `agentic` globally from local source
 ```
+
+### Project structure
+
+```
+src/
+  index.ts          entry point, CLI parsing, session loop
+  agent.ts          turn runner, tool dispatch, approval flow
+  tools.ts          tool definitions and handlers
+  config.ts         config load/save
+  session.ts        session state tracking
+  skills/           skills loader, trigger matcher, executor
+  mcp/              MCP config loader and types
+  memory/           project memory store and detector
+  providers/        Gemini, Claude, OpenAI, Ollama adapters
+tests/
+  skills/           unit tests for skills system
+  mcp/              unit tests for MCP config loader
+  memory/           unit tests for memory store and detector
+```
+
+### Running tests
+
+```bash
+npm test                        # run all tests once
+npm run test:watch              # watch mode for development
+```
+
+All 61 tests should pass. If they don't, open an issue.
+
+---
 
 ## Roadmap
 
+- [x] Rich approval flow with per-tool sensitivity tiers
+- [x] PTY support for password-requiring commands
+- [x] Session tracking (tokens, tool counts, history)
+- [x] Skills system — reusable, auto-triggered instruction sets
+- [x] MCP config loading — connect any MCP server
+- [x] Project memory — cross-session stack detection and learning
+- [ ] MCP server spawning and live tool injection
 - [ ] Streaming responses
-- [ ] MCP server support
-- [ ] Persistent project memory (`.agentic/` per folder)
 - [ ] More tools: `web_fetch`, `apply_patch`, `run_tests`
 - [ ] Windows PowerShell tool variant
+- [ ] Web UI for memory and skill management
+
+---
 
 ## License
 
-MIT © mrx-arafat
+MIT © [mrx-arafat](https://github.com/mrx-arafat)

@@ -9,3 +9,7 @@ coverage
 .idea
 docs
 rev
+
+# Private development
+.claude/
+planning/

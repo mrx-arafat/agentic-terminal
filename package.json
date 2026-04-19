@@ -1,7 +1,7 @@
 {
   "name": "agentic-terminal",
   "version": "0.2.0",
-  "description": "Folder-scoped AI terminal agent. Like Warp AI but open-source and uses your own Gemini or Claude API key.",
+  "description": "Open-source folder-scoped AI terminal agent with skills, MCP integration, and project memory. Gemini, Claude, OpenAI, or Ollama.",
   "type": "module",
   "bin": {
     "agentic": "bin/agentic.js",
@@ -21,7 +21,9 @@
     "dev": "tsx src/index.ts",
     "start": "node bin/agentic.js",
     "prepublishOnly": "npm run build",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "engines": {
     "node": ">=18"
@@ -35,11 +37,14 @@
     "gemini",
     "claude",
     "anthropic",
-    "google",
+    "openai",
+    "ollama",
+    "mcp",
+    "skills",
     "devops",
-    "warp",
     "shell",
-    "assistant"
+    "assistant",
+    "coding-agent"
   ],
   "author": "mrx-arafat",
   "license": "MIT",
@@ -67,6 +72,7 @@
     "@types/marked-terminal": "^6.1.1",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.4"
   }
 }

@@ -1,6 +1,7 @@
 import readline from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import chalk from "chalk";
 import {
   type Config,
@@ -22,6 +23,10 @@ import { banner, errorLine, infoLine, promptPrefix, successLine, warnLine } from
 import { createSession, formatStatus, formatHistory, type SessionState } from "./session.js";
 import { TOOL_DEFS } from "./tools.js";
 import { CancelError } from "./approval.js";
+import { loadSkills, mergeSkills } from "./skills/loader.js";
+import type { Skill } from "./skills/types.js";
+import { MemoryStore } from "./memory/store.js";
+import { detectProjectType, getProjectName } from "./memory/detector.js";
 
 const VERSION = "0.2.0";
 
@@ -101,6 +106,16 @@ function applyOverrides(cfg: Config, args: ParsedArgs): Config {
   return next;
 }
 
+async function loadAllSkills(cwd: string): Promise<Skill[]> {
+  const globalDir = path.join(os.homedir(), ".config", "agentic-terminal", "skills");
+  const projectDir = path.join(cwd, ".agentic", "skills");
+  const [global, project] = await Promise.all([
+    loadSkills(globalDir),
+    loadSkills(projectDir),
+  ]);
+  return mergeSkills(global, project);
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
@@ -153,11 +168,19 @@ async function main(): Promise<void> {
   const history: Message[] = [];
   const session = createSession(cfg, provider.name, ctx.cwd, args.yesUnsafe);
 
+  const skills = await loadAllSkills(cwd);
+
+  const memStore = new MemoryStore(path.join(os.homedir(), ".agentic", "projects"));
+  const projectName = getProjectName(cwd);
+  const projectType = detectProjectType(cwd);
+  const mem = await memStore.load(projectName) ?? await memStore.initialize(projectName, projectType, cwd);
+  void mem; // available for future use
+
   if (args.prompt) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const controller = new AbortController();
     try {
-      await runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: controller.signal }, args.prompt);
+      await runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: controller.signal, skills }, args.prompt);
     } catch (e) {
       if (e instanceof CancelError || (e as Error).name === "CancelError") {
         controller.abort();
@@ -192,7 +215,7 @@ async function main(): Promise<void> {
     if (!input) { await loop(); continue; }
 
     if (input.startsWith("/")) {
-      const done = await handleSlash(input, { cfg, ctx, history, session });
+      const done = await handleSlash(input, { cfg, ctx, history, session, skills });
       if (done === "exit") break;
       await loop();
       continue;
@@ -207,7 +230,7 @@ async function main(): Promise<void> {
     rl.on("SIGINT", onTurnSigint);
 
     try {
-      await runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: controller.signal }, input);
+      await runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: controller.signal, skills }, input);
     } catch (e) {
       if (e instanceof CancelError || (e as Error).name === "CancelError") {
         controller.abort();
@@ -235,6 +258,7 @@ interface SlashCtx {
   ctx: ToolContext;
   history: Message[];
   session: SessionState;
+  skills: Skill[];
 }
 
 async function handleSlash(input: string, s: SlashCtx): Promise<"exit" | void> {
@@ -243,10 +267,29 @@ async function handleSlash(input: string, s: SlashCtx): Promise<"exit" | void> {
     case "exit":
     case "quit":
       return "exit";
+    case "skills":
+      if (s.skills.length === 0) {
+        console.log(infoLine("no skills loaded. add SKILL.md files to ~/.config/agentic-terminal/skills/ or .agentic/skills/"));
+        return;
+      }
+      if (rest[0]) {
+        const sk = s.skills.find((x) => x.metadata.name === rest[0]);
+        if (!sk) { console.log(errorLine(`skill not found: ${rest[0]}`)); return; }
+        console.log(chalk.bold(sk.metadata.name));
+        console.log(chalk.gray(sk.metadata.description));
+        console.log(chalk.gray("triggers: ") + sk.metadata.triggerPatterns.join(", "));
+        return;
+      }
+      console.log(chalk.bold(`Loaded skills (${s.skills.length}):`));
+      for (const sk of s.skills) {
+        console.log(`  ${chalk.cyan(sk.metadata.name)}  ${chalk.gray(sk.metadata.description)}`);
+      }
+      return;
     case "help":
       console.log(`
 ${chalk.bold("Slash commands:")}
   /help                       show this help
+  /skills                     list loaded skills
   /status                     show current session status
   /history                    show conversation history and tool calls
   /tools                      list all available tools and their approval status

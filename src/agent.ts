@@ -9,6 +9,9 @@ import { errorLine, renderMarkdown, toolLine, toolResult, warnLine, suggestForEr
 import { type SessionState, recordTurn } from "./session.js";
 import { classify } from "./sensitivity.js";
 import { requestApproval, CancelError } from "./approval.js";
+import type { Skill } from "./skills/types.js";
+import { rankSkills } from "./skills/trigger.js";
+import { buildSkillSystemPrompt } from "./skills/executor.js";
 
 export interface AgentDeps {
   cfg: Config;
@@ -18,6 +21,7 @@ export interface AgentDeps {
   history: Message[];
   session: SessionState;
   abortSignal: AbortSignal;
+  skills?: Skill[];
 }
 
 export function buildSystemPrompt(ctx: ToolContext): string {
@@ -33,12 +37,16 @@ export function buildSystemPrompt(ctx: ToolContext): string {
 }
 
 export async function runTurn(deps: AgentDeps, userInput: string): Promise<void> {
-  const { cfg, provider, ctx, rl, history, session, abortSignal } = deps;
+  const { cfg, provider, ctx, rl, history, session, abortSignal, skills } = deps;
 
   history.push({ role: "user", content: userInput });
   const toolCallsForTurn: { name: string; argsPreview: string }[] = [];
 
-  const systemMsg: Message = { role: "system", content: buildSystemPrompt(ctx) };
+  const matched = skills && skills.length > 0 ? rankSkills(userInput, skills)[0] : undefined;
+  const systemContent = matched
+    ? `${buildSystemPrompt(ctx)}\n\n${buildSkillSystemPrompt(matched)}`
+    : buildSystemPrompt(ctx);
+  const systemMsg: Message = { role: "system", content: systemContent };
 
   for (let i = 0; i < cfg.maxIterations; i++) {
     const spinner = ora({ text: chalk.gray(`${provider.name} thinking…`), spinner: "dots" }).start();
