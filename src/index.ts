@@ -28,7 +28,7 @@ import type { Skill } from "./skills/types.js";
 import { MemoryStore } from "./memory/store.js";
 import { detectProjectType, getProjectName } from "./memory/detector.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 
 function usage(): void {
   console.log(`

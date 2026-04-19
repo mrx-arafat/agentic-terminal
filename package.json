@@ -1,6 +1,6 @@
 {
   "name": "agentic-terminal",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Open-source folder-scoped AI terminal agent with skills, MCP integration, and project memory. Gemini, Claude, OpenAI, or Ollama.",
   "type": "module",
   "bin": {
