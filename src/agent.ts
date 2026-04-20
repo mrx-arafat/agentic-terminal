@@ -1,5 +1,4 @@
 import type readline from "node:readline";
-import ora from "ora";
 import chalk from "chalk";
 import type { Config } from "./config.js";
 import type { Provider } from "./providers/types.js";
@@ -49,13 +48,20 @@ export async function runTurn(deps: AgentDeps, userInput: string): Promise<void>
   const systemMsg: Message = { role: "system", content: systemContent };
 
   for (let i = 0; i < cfg.maxIterations; i++) {
-    const spinner = ora({ text: chalk.gray(`${provider.name} thinking…`), spinner: "dots" }).start();
+    process.stdout.write(chalk.gray(`${provider.name} thinking…`));
+    const clearLine = (): void => {
+      if (process.stdout.isTTY) {
+        process.stdout.write("\r\x1b[2K");
+      } else {
+        process.stdout.write("\n");
+      }
+    };
     let response;
     try {
       response = await provider.chat([systemMsg, ...history], TOOL_DEFS);
-      spinner.stop();
+      clearLine();
     } catch (e) {
-      spinner.stop();
+      clearLine();
       const msg = (e as Error).message;
       console.log(errorLine(msg));
       const suggestion = suggestForError(msg);

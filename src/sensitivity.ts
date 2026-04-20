@@ -41,8 +41,15 @@ export function classify(input: ClassifyInput): { level: Sensitivity; reason?: s
   if (["read_file", "list_dir", "grep", "glob", "cd"].includes(input.tool)) {
     return { level: "safe" };
   }
-  if (["write_file", "edit_file"].includes(input.tool)) {
+  if (["write_file", "edit_file", "multi_edit", "create_dir", "move_path", "copy_path"].includes(input.tool)) {
     return { level: "dangerous", reason: input.tool };
+  }
+  if (input.tool === "delete_file") {
+    return { level: "destructive", reason: "delete_file" };
+  }
+  if (input.tool === "delete_dir") {
+    const recursive = input.args.recursive === true;
+    return { level: "destructive", reason: recursive ? "delete_dir recursive" : "delete_dir" };
   }
 
   if (input.tool === "bash") {

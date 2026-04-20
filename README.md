@@ -76,6 +76,30 @@ That's it. The agent will read your files, propose changes, and ask for your app
 
 ---
 
+## What's New in v0.3.1
+
+### Session Persistence Fixed
+Interactive sessions now persist indefinitely. Previously, sessions exited unexpectedly after one turn. Fixed:
+- Removed `ora` spinner (was hijacking stdin and breaking readline state)
+- Switched from fragile async iterator to event-based `rl.on('line')` pattern
+- Session stays open until `/exit` or Ctrl+D
+
+### New File/Folder Manipulation Tools
+Agent now has autonomous multi-file capabilities:
+
+| Tool | Purpose |
+|------|---------|
+| `create_dir` | `mkdir -p` directories (idempotent) |
+| `delete_file` | Remove single file (destructive tier) |
+| `delete_dir` | Remove directory (recursive flag available, destructive tier) |
+| `move_path` | Rename or move files/directories |
+| `copy_path` | Recursive copy (fails if dest exists) |
+| `multi_edit` | Batch atomic edits to one file (all-or-nothing) |
+
+Enable autonomous restructuring workflows with `agentic --yes` for safer operations.
+
+---
+
 ## What's New in v0.3.0
 
 ### Skills System
@@ -98,10 +122,11 @@ The agent now remembers your project across sessions. It detects your stack (Nod
 | **Skills** | Auto-triggered reusable instruction sets per task type. |
 | **MCP servers** | Connect external tools via Model Context Protocol. |
 | **Project memory** | Cross-session learning: stack detection, error patterns, tool stats. |
-| **Real tools** | `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, `glob`, `cd`. |
+| **Real tools** | `bash`, `read_file`, `write_file`, `edit_file`, `create_dir`, `delete_file`, `delete_dir`, `move_path`, `copy_path`, `multi_edit`, `list_dir`, `grep`, `glob`, `cd`. |
 | **Smart approval** | 3-tier sensitivity (safe / dangerous / destructive) with interactive prompt. |
 | **One-shot mode** | `agentic "prompt"` for scripts and CI pipelines. |
 | **Slash commands** | `/model`, `/provider`, `/cd`, `/skills`, `/status`, `/history`, and more. |
+| **Persistent sessions** | Interactive mode stays open turn-after-turn until `/exit` or Ctrl+D. |
 | **No lock-in** | MIT licensed, no telemetry, your keys stay local. |
 
 ---
@@ -162,8 +187,8 @@ Every tool call goes through a 3-tier approval system before executing.
 | Tier | Examples | Default behavior |
 |------|----------|-----------------|
 | **Safe** | `read_file`, `list_dir`, `grep`, `glob`, `cd` | Runs silently, no prompt |
-| **Dangerous** | `bash` (generic), `write_file`, `edit_file`, `sudo`, `curl`, `npm publish` | Prompts — or auto-approves with `--yes` |
-| **Destructive** | `rm -rf`, `git push --force`, `DROP TABLE`, `chmod 777`, `curl \| bash` | Always prompts — even with `--yes`. Use `--yes-unsafe` to skip. |
+| **Dangerous** | `bash`, `write_file`, `edit_file`, `create_dir`, `move_path`, `copy_path`, `multi_edit`, `sudo`, `curl -X POST`, `npm publish` | Prompts — or auto-approves with `--yes` |
+| **Destructive** | `delete_file`, `delete_dir`, `rm -rf`, `git push --force`, `DROP TABLE`, `chmod 777`, `curl \| bash` | Always prompts — even with `--yes`. Use `--yes-unsafe` to skip. |
 
 ### Interactive prompt
 
@@ -192,16 +217,35 @@ agentic --yes-unsafe   # auto-approve everything including destructive (use care
 
 ## Tools Reference
 
+### Read/Explore (Safe)
+| Tool | What it does |
+|------|-------------|
+| `read_file` | Read file contents |
+| `list_dir` | List directory contents |
+| `grep` | Recursive regex search |
+| `glob` | Find files by name pattern |
+| `cd` | Change session working directory |
+
+### Write/Edit (Dangerous)
+| Tool | What it does |
+|------|-------------|
+| `write_file` | Create or overwrite a file |
+| `edit_file` | Replace a unique string in a file |
+| `multi_edit` | Batch atomic edits to one file (all-or-nothing) |
+
+### File/Folder Ops (Dangerous or Destructive)
+| Tool | What it does | Tier |
+|------|-------------|------|
+| `create_dir` | Create directory with parents (idempotent) | Dangerous |
+| `move_path` | Move or rename file/directory | Dangerous |
+| `copy_path` | Copy file/directory recursively | Dangerous |
+| `delete_file` | Remove a single file | **Destructive** |
+| `delete_dir` | Remove a directory (recursive flag optional) | **Destructive** |
+
+### Shell
 | Tool | What it does | Tier |
 |------|-------------|------|
 | `bash` | Run a shell command in cwd | Dangerous (destructive if rm -rf, force-push, etc.) |
-| `read_file` | Read a file | Safe |
-| `write_file` | Create or overwrite a file | Dangerous |
-| `edit_file` | Replace a unique string in a file | Dangerous |
-| `list_dir` | List directory contents | Safe |
-| `grep` | Recursive regex search across files | Safe |
-| `glob` | Find files matching a pattern | Safe |
-| `cd` | Change session working directory | Safe |
 
 Password-requiring commands (`sudo`, `ssh`, `docker login`, `mysql`, `psql`) run through a PTY so interactive prompts work correctly.
 
@@ -490,6 +534,8 @@ All 61 tests should pass. If they don't, open an issue.
 - [x] Skills system — reusable, auto-triggered instruction sets
 - [x] MCP config loading — connect any MCP server
 - [x] Project memory — cross-session stack detection and learning
+- [x] Session persistence — interactive sessions stay open across turns
+- [x] File/folder tools — `create_dir`, `delete_file`, `delete_dir`, `move_path`, `copy_path`, `multi_edit`
 - [ ] MCP server spawning and live tool injection
 - [ ] Streaming responses
 - [ ] More tools: `web_fetch`, `apply_patch`, `run_tests`

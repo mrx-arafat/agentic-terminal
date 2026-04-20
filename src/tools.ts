@@ -149,6 +149,110 @@ async function glob(args: Record<string, unknown>, ctx: ToolContext): Promise<st
   return bash({ command: cmd, timeout: 30000 }, ctx);
 }
 
+async function createDir(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+  const p = String(args.path ?? "");
+  if (!p) return "error: path required";
+  const abs = resolveInside(ctx.cwd, p);
+  try {
+    await fs.mkdir(abs, { recursive: true });
+    return `ok: created ${abs}`;
+  } catch (e) {
+    return `error: ${(e as Error).message}`;
+  }
+}
+
+async function deleteFile(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+  const p = String(args.path ?? "");
+  if (!p) return "error: path required";
+  const abs = resolveInside(ctx.cwd, p);
+  try {
+    const stat = await fs.stat(abs);
+    if (stat.isDirectory()) return "error: path is a directory; use delete_dir";
+    await fs.unlink(abs);
+    return `ok: deleted ${abs}`;
+  } catch (e) {
+    return `error: ${(e as Error).message}`;
+  }
+}
+
+async function deleteDir(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+  const p = String(args.path ?? "");
+  const recursive = args.recursive === true;
+  if (!p) return "error: path required";
+  const abs = resolveInside(ctx.cwd, p);
+  if (abs === "/" || abs === path.parse(abs).root) return "error: refusing to delete filesystem root";
+  try {
+    const stat = await fs.stat(abs);
+    if (!stat.isDirectory()) return "error: path is not a directory";
+    if (recursive) {
+      await fs.rm(abs, { recursive: true, force: false });
+    } else {
+      await fs.rmdir(abs);
+    }
+    return `ok: removed ${abs}`;
+  } catch (e) {
+    return `error: ${(e as Error).message}`;
+  }
+}
+
+async function movePath(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+  const from = String(args.from ?? "");
+  const to = String(args.to ?? "");
+  if (!from || !to) return "error: from and to required";
+  const src = resolveInside(ctx.cwd, from);
+  const dst = resolveInside(ctx.cwd, to);
+  try {
+    await fs.mkdir(path.dirname(dst), { recursive: true });
+    await fs.rename(src, dst);
+    return `ok: moved ${src} -> ${dst}`;
+  } catch (e) {
+    return `error: ${(e as Error).message}`;
+  }
+}
+
+async function copyPath(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+  const from = String(args.from ?? "");
+  const to = String(args.to ?? "");
+  if (!from || !to) return "error: from and to required";
+  const src = resolveInside(ctx.cwd, from);
+  const dst = resolveInside(ctx.cwd, to);
+  try {
+    await fs.mkdir(path.dirname(dst), { recursive: true });
+    await fs.cp(src, dst, { recursive: true, force: false, errorOnExist: true });
+    return `ok: copied ${src} -> ${dst}`;
+  } catch (e) {
+    return `error: ${(e as Error).message}`;
+  }
+}
+
+async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
+  const p = String(args.path ?? "");
+  const edits = args.edits;
+  if (!p) return "error: path required";
+  if (!Array.isArray(edits) || edits.length === 0) return "error: edits array required (non-empty)";
+  const abs = resolveInside(ctx.cwd, p);
+  try {
+    let content = await fs.readFile(abs, "utf8");
+    let applied = 0;
+    for (let i = 0; i < edits.length; i++) {
+      const e = edits[i] as { old_string?: unknown; new_string?: unknown };
+      const oldStr = String(e?.old_string ?? "");
+      const newStr = String(e?.new_string ?? "");
+      if (!oldStr) return `error: edit #${i + 1} missing old_string`;
+      const idx = content.indexOf(oldStr);
+      if (idx === -1) return `error: edit #${i + 1} old_string not found`;
+      const count = content.split(oldStr).length - 1;
+      if (count > 1) return `error: edit #${i + 1} old_string matches ${count} times; make it unique`;
+      content = content.replace(oldStr, newStr);
+      applied++;
+    }
+    await fs.writeFile(abs, content, "utf8");
+    return `ok: applied ${applied} edit(s) to ${abs}`;
+  } catch (e) {
+    return `error: ${(e as Error).message}`;
+  }
+}
+
 async function cd(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
   const p = String(args.path ?? "");
   if (!p) return `cwd: ${ctx.cwd}`;
@@ -258,6 +362,89 @@ export const TOOL_DEFS: ToolDef[] = [
     },
     dangerous: false,
   },
+  {
+    name: "create_dir",
+    description: "Create a directory (and any missing parents). Idempotent — succeeds if it already exists.",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+    },
+    dangerous: true,
+  },
+  {
+    name: "delete_file",
+    description: "Delete a single file. Fails on directories — use delete_dir for those.",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+    },
+    dangerous: true,
+  },
+  {
+    name: "delete_dir",
+    description: "Delete a directory. Pass recursive=true to remove non-empty dirs. Refuses filesystem root.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        recursive: { type: "boolean", description: "Remove recursively (default false)" },
+      },
+      required: ["path"],
+    },
+    dangerous: true,
+  },
+  {
+    name: "move_path",
+    description: "Move or rename a file or directory. Creates missing parent dirs at destination.",
+    parameters: {
+      type: "object",
+      properties: {
+        from: { type: "string" },
+        to: { type: "string" },
+      },
+      required: ["from", "to"],
+    },
+    dangerous: true,
+  },
+  {
+    name: "copy_path",
+    description: "Copy a file or directory (recursive). Fails if destination exists.",
+    parameters: {
+      type: "object",
+      properties: {
+        from: { type: "string" },
+        to: { type: "string" },
+      },
+      required: ["from", "to"],
+    },
+    dangerous: true,
+  },
+  {
+    name: "multi_edit",
+    description:
+      "Apply multiple unique old_string/new_string replacements to one file atomically. Fails (no writes) if any old_string is missing or non-unique.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        edits: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              old_string: { type: "string" },
+              new_string: { type: "string" },
+            },
+            required: ["old_string", "new_string"],
+          },
+        },
+      },
+      required: ["path", "edits"],
+    },
+    dangerous: true,
+  },
 ];
 
 export const TOOL_HANDLERS: Record<string, ToolHandler> = {
@@ -269,6 +456,12 @@ export const TOOL_HANDLERS: Record<string, ToolHandler> = {
   grep,
   glob,
   cd,
+  create_dir: createDir,
+  delete_file: deleteFile,
+  delete_dir: deleteDir,
+  move_path: movePath,
+  copy_path: copyPath,
+  multi_edit: multiEdit,
 };
 
 export function findTool(name: string): ToolDef | undefined {

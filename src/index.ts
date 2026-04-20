@@ -196,56 +196,64 @@ async function main(): Promise<void> {
 
   console.log(banner(provider.name, resolveModel(cfg), ctx.cwd));
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  function onIdleSigint() {
-    console.log(infoLine("\n(Ctrl+C) type /exit to quit"));
-    rl.prompt();
-  }
-  rl.on("SIGINT", onIdleSigint);
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: process.stdin.isTTY,
+  });
 
-  const loop = async () => {
+  rl.on("SIGINT", () => {
+    console.log(infoLine("\n(Ctrl+C) type /exit to quit — Ctrl+D for EOF"));
+    rl.prompt();
+  });
+
+  let turnInProgress = false;
+  let turnAbort: AbortController | null = null;
+
+  const showPrompt = (): void => {
     rl.setPrompt(promptPrefix(ctx.cwd));
     rl.prompt();
   };
 
-  await loop();
-
-  for await (const line of rl) {
-    const input = line.trim();
-    if (!input) { await loop(); continue; }
+  rl.on("line", (raw: string): void => {
+    if (turnInProgress) return;
+    const input = raw.trim();
+    if (!input) { showPrompt(); return; }
 
     if (input.startsWith("/")) {
-      const done = await handleSlash(input, { cfg, ctx, history, session, skills });
-      if (done === "exit") break;
-      await loop();
-      continue;
+      void handleSlash(input, { cfg, ctx, history, session, skills }).then((done) => {
+        if (done === "exit") { rl.close(); return; }
+        showPrompt();
+      });
+      return;
     }
 
-    rl.removeListener("SIGINT", onIdleSigint);
-    const controller = new AbortController();
-    const onTurnSigint = () => {
-      controller.abort();
-      console.log(infoLine("(^C — cancelling after current tool)"));
-    };
-    rl.on("SIGINT", onTurnSigint);
+    turnInProgress = true;
+    turnAbort = new AbortController();
+    const signal = turnAbort.signal;
 
-    try {
-      await runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: controller.signal, skills }, input);
-    } catch (e) {
-      if (e instanceof CancelError || (e as Error).name === "CancelError") {
-        controller.abort();
-        console.log(warnLine("(cancelled)"));
-      } else {
-        console.log(errorLine((e as Error).message));
-      }
-    } finally {
-      rl.removeListener("SIGINT", onTurnSigint);
-      rl.on("SIGINT", onIdleSigint);
-    }
-    await loop();
-  }
+    void runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: signal, skills }, input)
+      .catch((e: unknown) => {
+        if (e instanceof CancelError || (e as Error).name === "CancelError") {
+          console.log(warnLine("(cancelled)"));
+        } else {
+          console.log(errorLine((e as Error).message));
+        }
+      })
+      .finally(() => {
+        turnInProgress = false;
+        turnAbort = null;
+        showPrompt();
+      });
+  });
 
-  rl.close();
+  await new Promise<void>((resolve) => {
+    rl.once("close", () => {
+      if (turnAbort) turnAbort.abort();
+      resolve();
+    });
+    showPrompt();
+  });
 }
 
 function mask(v?: string): string | undefined {
