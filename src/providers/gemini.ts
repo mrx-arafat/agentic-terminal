@@ -68,6 +68,12 @@ export class GeminiProvider implements Provider {
 
     const candidate = response.candidates?.[0];
     const parts = candidate?.content?.parts ?? [];
+    if (parts.length === 0) {
+      const reason = candidate?.finishReason ?? "UNKNOWN";
+      const safety = candidate?.safetyRatings ? ` safety=${JSON.stringify(candidate.safetyRatings)}` : "";
+      const block = response.promptFeedback?.blockReason ? ` block=${response.promptFeedback.blockReason}` : "";
+      throw new Error(`gemini returned empty response (finishReason=${reason}${block}${safety})`);
+    }
     let text = "";
     const toolCalls: ToolCall[] = [];
     let idx = 0;

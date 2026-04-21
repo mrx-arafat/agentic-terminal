@@ -1,17 +1,86 @@
 import chalk from "chalk";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
+import { highlight, supportsLanguage } from "cli-highlight";
 import readline from "node:readline";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 
-marked.use(markedTerminal() as never);
+const LANG_ALIASES: Record<string, string> = {
+  sh: "bash", shell: "bash", zsh: "bash", console: "bash",
+  js: "javascript", ts: "typescript", jsx: "javascript", tsx: "typescript",
+  py: "python", rb: "ruby", yml: "yaml", md: "markdown",
+};
 
+function highlightCode(code: string, lang: string | undefined): string {
+  if (!lang) return code;
+  const normalized = LANG_ALIASES[lang.toLowerCase()] ?? lang.toLowerCase();
+  if (!supportsLanguage(normalized)) return code;
+  try {
+    return highlight(code, { language: normalized, ignoreIllegals: true });
+  } catch {
+    return code;
+  }
+}
+
+marked.use(
+  markedTerminal({
+    firstHeading: chalk.bold.cyan.underline,
+    heading: chalk.bold.cyan,
+    strong: chalk.bold,
+    em: chalk.italic,
+    codespan: chalk.magenta,
+    // Block code handled by our own pre-pass below (marked-terminal only accepts a chalk instance here).
+    code: chalk.white,
+    blockquote: chalk.gray.italic,
+    link: chalk.blue.underline,
+    href: chalk.blue.underline,
+    hr: chalk.gray,
+    table: chalk.reset,
+    width: Math.max(80, (process.stdout.columns ?? 100) - 4),
+    reflowText: false,
+    tab: 2,
+  }) as never,
+);
+
+function styleCodeBlock(code: string, lang: string | undefined): string {
+  const langLabel = lang ? chalk.gray(" " + lang) : "";
+  const highlighted = highlightCode(code, lang);
+  const lines = highlighted.split("\n").map((l) => chalk.gray("│ ") + l).join("\n");
+  return `${chalk.gray("┌─") + langLabel}\n${lines}\n${chalk.gray("└─")}`;
+}
+
+/** Render a block of AI-generated markdown to a styled terminal string. */
 export function renderMarkdown(text: string): string {
   if (!text.trim()) return "";
+
+  // Swap fenced code blocks with placeholders so we can apply syntax highlight
+  // and a boxed presentation that marked-terminal can't do natively.
+  const blocks: { lang: string; code: string }[] = [];
+  const prepared = text.replace(/```(\w+)?\n?([\s\S]*?)```/g, (_, lang: string | undefined, code: string) => {
+    const i = blocks.length;
+    blocks.push({ lang: (lang ?? "").trim(), code: code.replace(/\n$/, "") });
+    return `\n§§CODE_BLOCK_${i}§§\n`;
+  });
+
+  let body: string;
   try {
-    return String(marked.parse(text)).trimEnd();
+    body = String(marked.parse(prepared)).trimEnd();
   } catch {
-    return text;
+    body = text;
   }
+
+  body = body.replace(/§§CODE_BLOCK_(\d+)§§/g, (_, i) => {
+    const b = blocks[Number(i)];
+    return b ? styleCodeBlock(b.code, b.lang) : "";
+  });
+
+  // Wrap in a subtle left-gutter "panel" so AI replies are visually distinct
+  // from shell output and tool calls.
+  const gutter = chalk.gray("│ ");
+  const lines = body.split("\n").map((l) => gutter + l).join("\n");
+  return `${chalk.gray("╭─ agent")}\n${lines}\n${chalk.gray("╰─")}`;
 }
 
 export function banner(providerName: string, model: string, cwd: string): string {
@@ -21,14 +90,43 @@ export function banner(providerName: string, model: string, cwd: string): string
   return `\n${title}\n${sub}\n${where}\n${chalk.gray("type /help for commands · Ctrl+C to cancel · Ctrl+D to exit")}\n`;
 }
 
+function shortCwd(cwd: string): string {
+  const home = process.env.HOME ?? os.homedir();
+  const withTilde = cwd.startsWith(home) ? "~" + cwd.slice(home.length) : cwd;
+  const parts = withTilde.split(path.sep);
+  if (parts.length <= 4) return withTilde;
+  return [parts[0], "…", ...parts.slice(-2)].join(path.sep);
+}
+
+function gitBranch(cwd: string): string | undefined {
+  let dir = cwd;
+  for (let i = 0; i < 30; i++) {
+    const head = path.join(dir, ".git", "HEAD");
+    try {
+      if (fs.existsSync(head)) {
+        const content = fs.readFileSync(head, "utf8").trim();
+        const m = content.match(/^ref:\s+refs\/heads\/(.+)$/);
+        if (m) return m[1];
+        return content.slice(0, 7); // detached HEAD
+      }
+    } catch { /* keep walking */ }
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+  return undefined;
+}
+
 export function promptPrefix(cwd: string): string {
-  const short = cwd.replace(process.env.HOME ?? "", "~");
-  return `${chalk.green("➜")} ${chalk.bold.blue(short)} ${chalk.cyan("›")} `;
+  const short = shortCwd(cwd);
+  const branch = gitBranch(cwd);
+  const gitPart = branch ? ` ${chalk.yellow("git:(" + branch + ")")}` : "";
+  return `\n${chalk.green("➜")} ${chalk.bold.blue(short)}${gitPart} ${chalk.cyan("›")} `;
 }
 
 export function toolLine(name: string, args: Record<string, unknown>): string {
   const preview = previewArgs(args);
-  return `${chalk.magenta("⚒")} ${chalk.bold(name)}${preview ? " " + chalk.gray(preview) : ""}`;
+  return `${chalk.magenta("⚒")} ${chalk.bold.magenta(name)}${preview ? " " + chalk.gray(preview) : ""}`;
 }
 
 function previewArgs(args: Record<string, unknown>): string {
@@ -47,9 +145,13 @@ function previewArgs(args: Record<string, unknown>): string {
 
 export function toolResult(name: string, result: string, ok: boolean): string {
   const head = ok ? chalk.green("✓") : chalk.red("✗");
-  const body = result.trim().split("\n").slice(0, 20).map((l) => chalk.gray("  " + l)).join("\n");
-  const more = result.split("\n").length > 20 ? chalk.gray(`  … (+${result.split("\n").length - 20} lines)`) : "";
-  return `${head} ${chalk.bold(name)}\n${body}${more ? "\n" + more : ""}`;
+  const nameColor = ok ? chalk.bold : chalk.bold.red;
+  const railColor = ok ? chalk.gray : chalk.red;
+  const rail = railColor("│ ");
+  const lines = result.trim().split("\n");
+  const body = lines.slice(0, 20).map((l) => rail + chalk.gray(l)).join("\n");
+  const more = lines.length > 20 ? "\n" + rail + chalk.gray(`… (+${lines.length - 20} lines)`) : "";
+  return `${head} ${nameColor(name)}\n${body}${more}`;
 }
 
 export function errorLine(msg: string): string {
@@ -77,6 +179,57 @@ export async function confirm(rl: readline.Interface, msg: string, defaultYes = 
   const ans = (await question(rl, `${chalk.yellow("?")} ${msg} ${chalk.gray(hint)} `)).trim().toLowerCase();
   if (ans === "") return defaultYes;
   return ans === "y" || ans === "yes";
+}
+
+/** Minimal unified-diff renderer. Line-based w/ common prefix/suffix folding. */
+export function renderDiff(oldStr: string, newStr: string, pathHint?: string, contextLines = 3): string {
+  if (oldStr === newStr) return chalk.gray("(no change)");
+  const A = oldStr.split("\n");
+  const B = newStr.split("\n");
+  const maxCommon = Math.min(A.length, B.length);
+  let prefix = 0;
+  while (prefix < maxCommon && A[prefix] === B[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < maxCommon - prefix &&
+    A[A.length - 1 - suffix] === B[B.length - 1 - suffix]
+  ) suffix++;
+
+  const removed = A.slice(prefix, A.length - suffix);
+  const added = B.slice(prefix, B.length - suffix);
+  const ctxBefore = A.slice(Math.max(0, prefix - contextLines), prefix);
+  const ctxAfter = A.slice(A.length - suffix, Math.min(A.length, A.length - suffix + contextLines));
+
+  const lines: string[] = [];
+  if (pathHint) {
+    lines.push(chalk.bold.gray(`--- ${pathHint}`));
+    lines.push(chalk.bold.gray(`+++ ${pathHint}`));
+  }
+  const hunkStart = Math.max(1, prefix - ctxBefore.length + 1);
+  lines.push(chalk.cyan(`@@ -${hunkStart},${ctxBefore.length + removed.length + ctxAfter.length} +${hunkStart},${ctxBefore.length + added.length + ctxAfter.length} @@`));
+  for (const l of ctxBefore) lines.push(chalk.gray(` ${l}`));
+  for (const l of removed) lines.push(chalk.red(`-${l}`));
+  for (const l of added) lines.push(chalk.green(`+${l}`));
+  for (const l of ctxAfter) lines.push(chalk.gray(` ${l}`));
+  return lines.join("\n");
+}
+
+/** Summary like "+12 -3". */
+export function diffStat(oldStr: string, newStr: string): string {
+  if (oldStr === newStr) return "no change";
+  const A = oldStr.split("\n");
+  const B = newStr.split("\n");
+  const maxCommon = Math.min(A.length, B.length);
+  let prefix = 0;
+  while (prefix < maxCommon && A[prefix] === B[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < maxCommon - prefix &&
+    A[A.length - 1 - suffix] === B[B.length - 1 - suffix]
+  ) suffix++;
+  const removed = A.length - prefix - suffix;
+  const added = B.length - prefix - suffix;
+  return `${chalk.green(`+${added}`)} ${chalk.red(`-${removed}`)}`;
 }
 
 export function suggestForError(msg: string): string | undefined {

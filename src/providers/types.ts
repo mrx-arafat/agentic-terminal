@@ -18,8 +18,13 @@ export interface ProviderResponse {
   usage?: { inputTokens: number; outputTokens: number };
 }
 
+export interface ChatOptions {
+  /** Abort signal propagated to fetch. */
+  signal?: AbortSignal;
+}
+
 export interface Provider {
   name: "gemini" | "claude" | "openai" | "ollama";
   model: string;
-  chat(messages: Message[], tools: ToolDef[]): Promise<ProviderResponse>;
+  chat(messages: Message[], tools: ToolDef[], opts?: ChatOptions): Promise<ProviderResponse>;
 }

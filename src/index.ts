@@ -2,6 +2,7 @@ import readline from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import {
   type Config,
@@ -23,12 +24,18 @@ import { banner, errorLine, infoLine, promptPrefix, successLine, warnLine } from
 import { createSession, formatStatus, formatHistory, type SessionState } from "./session.js";
 import { TOOL_DEFS } from "./tools.js";
 import { CancelError } from "./approval.js";
+import { classify as classifyInput } from "./classify.js";
+import { buildCompletions, expandTilde, suggestDir } from "./shell.js";
+import { spawn } from "node:child_process";
 import { loadSkills, mergeSkills } from "./skills/loader.js";
 import type { Skill } from "./skills/types.js";
 import { MemoryStore } from "./memory/store.js";
 import { detectProjectType, getProjectName } from "./memory/detector.js";
+import { MCPManager } from "./mcp/manager.js";
+import { buildSessionContext, type SessionContext } from "./context.js";
+import type { BgProcess, BlockRecord, TodoItem } from "./blocks.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 function usage(): void {
   console.log(`
@@ -107,13 +114,17 @@ function applyOverrides(cfg: Config, args: ParsedArgs): Config {
 }
 
 async function loadAllSkills(cwd: string): Promise<Skill[]> {
+  const thisDir = path.dirname(fileURLToPath(import.meta.url));
+  const builtinDir = path.join(thisDir, "skills", "builtin");
   const globalDir = path.join(os.homedir(), ".config", "agentic-terminal", "skills");
   const projectDir = path.join(cwd, ".agentic", "skills");
-  const [global, project] = await Promise.all([
+  const [builtin, global, project] = await Promise.all([
+    loadSkills(builtinDir),
     loadSkills(globalDir),
     loadSkills(projectDir),
   ]);
-  return mergeSkills(global, project);
+  // project overrides global overrides builtin
+  return mergeSkills(mergeSkills(builtin, global), project);
 }
 
 async function main(): Promise<void> {
@@ -164,7 +175,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const ctx: ToolContext = { cwd };
+  const readPaths = new Set<string>();
+  const blocks: BlockRecord[] = [];
+  const todos: TodoItem[] = [];
+  const bgProcs: BgProcess[] = [];
+  const ctx: ToolContext = { cwd, readPaths, blocks, todos, bgProcs };
+  const sessionContext: SessionContext = buildSessionContext(cwd);
   const history: Message[] = [];
   const session = createSession(cfg, provider.name, ctx.cwd, args.yesUnsafe);
 
@@ -176,11 +192,27 @@ async function main(): Promise<void> {
   const mem = await memStore.load(projectName) ?? await memStore.initialize(projectName, projectType, cwd);
   void mem; // available for future use
 
+  const mcp = new MCPManager();
+  await mcp.loadConfigs(cwd);
+  if (mcp.listConfigured().length > 0) {
+    await mcp.connectAll((msg) => console.log(warnLine(msg)));
+    const ready = mcp.status().filter((s) => s.status === "ready");
+    if (ready.length > 0) {
+      const total = ready.reduce((n, s) => n + s.toolCount, 0);
+      console.log(infoLine(`mcp: ${ready.length} server(s), ${total} tool(s) ready`));
+    }
+  }
+
+  const shutdown = async (): Promise<void> => {
+    await mcp.disconnectAll().catch(() => undefined);
+  };
+  process.once("SIGTERM", () => { void shutdown().finally(() => process.exit(0)); });
+
   if (args.prompt) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const controller = new AbortController();
     try {
-      await runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: controller.signal, skills }, args.prompt);
+      await runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: controller.signal, skills, mcp, sessionContext }, args.prompt);
     } catch (e) {
       if (e instanceof CancelError || (e as Error).name === "CancelError") {
         controller.abort();
@@ -190,6 +222,7 @@ async function main(): Promise<void> {
       }
     } finally {
       rl.close();
+      await shutdown();
     }
     return;
   }
@@ -200,6 +233,7 @@ async function main(): Promise<void> {
     input: process.stdin,
     output: process.stdout,
     terminal: process.stdin.isTTY,
+    completer: (line: string) => buildCompletions(line, ctx.cwd),
   });
 
   rl.on("SIGINT", () => {
@@ -209,8 +243,10 @@ async function main(): Promise<void> {
 
   let turnInProgress = false;
   let turnAbort: AbortController | null = null;
+  let rlClosed = false;
 
   const showPrompt = (): void => {
+    if (rlClosed) return;
     rl.setPrompt(promptPrefix(ctx.cwd));
     rl.prompt();
   };
@@ -220,22 +256,34 @@ async function main(): Promise<void> {
     const input = raw.trim();
     if (!input) { showPrompt(); return; }
 
-    if (input.startsWith("/")) {
-      void handleSlash(input, { cfg, ctx, history, session, skills }).then((done) => {
+    const c = classifyInput(input);
+
+    if (c.kind === "slash") {
+      void handleSlash(c.payload, { cfg, ctx, history, session, skills, mcp, sessionContext }).then((done) => {
         if (done === "exit") { rl.close(); return; }
         showPrompt();
       });
       return;
     }
 
+    if (c.kind === "shell") {
+      if (shouldShowHint(c.reason)) console.log(chalk.gray(`» shell (${c.reason})`));
+      turnInProgress = true;
+      void runShell(c.payload, ctx)
+        .catch((e: unknown) => { console.log(errorLine((e as Error).message)); })
+        .finally(() => { turnInProgress = false; showPrompt(); });
+      return;
+    }
+
+    if (shouldShowHint(c.reason)) console.log(chalk.gray(`» ai (${c.reason})`));
     turnInProgress = true;
     turnAbort = new AbortController();
     const signal = turnAbort.signal;
 
-    void runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: signal, skills }, input)
+    void runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: signal, skills, mcp, sessionContext }, c.payload)
       .catch((e: unknown) => {
         if (e instanceof CancelError || (e as Error).name === "CancelError") {
-          console.log(warnLine("(cancelled)"));
+          console.log(warnLine("turn interrupted — your next message will resume from here"));
         } else {
           console.log(errorLine((e as Error).message));
         }
@@ -249,10 +297,93 @@ async function main(): Promise<void> {
 
   await new Promise<void>((resolve) => {
     rl.once("close", () => {
+      rlClosed = true;
       if (turnAbort) turnAbort.abort();
       resolve();
     });
     showPrompt();
+  });
+
+  await shutdown();
+}
+
+/** Hide the routing hint when the classification is obvious; only surface it
+ *  when the call could reasonably have gone the other way. */
+const OBVIOUS_REASONS = new Set([
+  "shell builtin",
+  "known command",
+  "env-var prefix",
+  "path-like command",
+  "sentence shape",
+  "question mark",
+  "natural-language cue",
+  "prose with glue words",
+]);
+function shouldShowHint(reason: string | undefined): boolean {
+  if (!reason) return false;
+  // Reasons include a backtick suffix (e.g. "known command `ls`"); strip before compare.
+  const head = reason.replace(/\s*`[^`]+`\s*$/, "").trim();
+  return !OBVIOUS_REASONS.has(head);
+}
+
+async function runShell(command: string, ctx: ToolContext): Promise<void> {
+  // cd needs to affect the parent's cwd — subprocess cd is useless here.
+  const cdMatch = command.match(/^cd(?:\s+(.*))?$/);
+  if (cdMatch) {
+    const rawTarget = (cdMatch[1] ?? "").trim();
+    const target = expandTilde(rawTarget);
+    const dest = target ? (path.isAbsolute(target) ? target : path.resolve(ctx.cwd, target)) : os.homedir();
+    if (!fs.existsSync(dest) || !fs.statSync(dest).isDirectory()) {
+      console.log(errorLine(`cd: not a directory: ${dest}`));
+      const needle = path.basename(rawTarget || "");
+      if (needle) {
+        const suggestion = suggestDir(ctx.cwd, needle);
+        if (suggestion) console.log(infoLine(`did you mean: cd ${suggestion}`));
+      }
+      return;
+    }
+    ctx.cwd = dest;
+    return;
+  }
+
+  const startedAt = Date.now();
+  await new Promise<void>((resolve) => {
+    const child = spawn("bash", ["-lc", command], {
+      cwd: ctx.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let captured = "";
+    const MAX_CAPTURE = 4000;
+    const tee = (data: Buffer, out: NodeJS.WriteStream): void => {
+      out.write(data);
+      if (captured.length < MAX_CAPTURE) {
+        captured += data.toString();
+        if (captured.length > MAX_CAPTURE) captured = captured.slice(0, MAX_CAPTURE) + "\n[truncated]";
+      }
+    };
+    child.stdout?.on("data", (d) => tee(d, process.stdout));
+    child.stderr?.on("data", (d) => tee(d, process.stderr));
+    child.on("error", (e) => { console.log(errorLine(e.message)); });
+    child.on("close", (code) => {
+      if (ctx.blocks) {
+        ctx.blocks.push({
+          id: ctx.blocks.length,
+          cwd: ctx.cwd,
+          command,
+          startedAt,
+          durationMs: Date.now() - startedAt,
+          exitCode: code,
+          output: captured,
+          truncated: captured.endsWith("[truncated]"),
+        });
+      }
+      if (code === 127) {
+        console.log(chalk.gray(`exit 127 (command not found) — prefix with \`#\` to send to AI instead`));
+      } else if (code !== 0 && code !== null) {
+        console.log(chalk.gray(`exit ${code}`));
+      }
+      resolve();
+    });
   });
 }
 
@@ -267,6 +398,8 @@ interface SlashCtx {
   history: Message[];
   session: SessionState;
   skills: Skill[];
+  mcp: MCPManager;
+  sessionContext: SessionContext;
 }
 
 async function handleSlash(input: string, s: SlashCtx): Promise<"exit" | void> {
@@ -295,12 +428,27 @@ async function handleSlash(input: string, s: SlashCtx): Promise<"exit" | void> {
       return;
     case "help":
       console.log(`
+${chalk.bold("Input modes (auto-detected):")}
+  shell         first token is a shell builtin, known tool, or binary on PATH
+  ai            everything else (sent to the LLM)
+  !<cmd>        force shell
+  #<prompt>     force ai
+  /<cmd>        slash command
+
 ${chalk.bold("Slash commands:")}
   /help                       show this help
   /skills                     list loaded skills
   /status                     show current session status
   /history                    show conversation history and tool calls
   /tools                      list all available tools and their approval status
+  /blocks                     list bash command blocks in this session
+  /block <id>                 show full output of a block by id
+  /todos                      show current plan (todos)
+  /context                    show the auto-detected project context summary
+  /mcp                        list MCP servers and status
+  /mcp connect <name>         (re)connect to an MCP server
+  /mcp disconnect <name>      disconnect an MCP server
+  /mcp tools [server]         list MCP tools (optionally filter by server)
   /clear                      clear conversation history
   /cwd                        show current working directory
   /cd <path>                  change working directory
@@ -364,13 +512,114 @@ ${chalk.bold("Slash commands:")}
     case "history":
       console.log(formatHistory(s.session));
       return;
-    case "tools":
-      console.log(chalk.bold("Available Tools:"));
+    case "tools": {
+      console.log(chalk.bold("Native tools:"));
       for (const t of TOOL_DEFS) {
         const allowed = s.session.alwaysAllow.has(t.name) ? chalk.green("(always allow)") : "";
         console.log(`  ${chalk.cyan(t.name)} ${allowed}`);
       }
+      const mcpDefs = s.mcp.getToolDefs();
+      if (mcpDefs.length > 0) {
+        console.log(chalk.bold("\nMCP tools:"));
+        for (const t of mcpDefs) {
+          const allowed = s.session.alwaysAllow.has(t.name) ? chalk.green("(always allow)") : "";
+          console.log(`  ${chalk.cyan(t.name)} ${allowed}`);
+        }
+      }
       return;
+    }
+    case "blocks": {
+      const blocks = s.ctx.blocks ?? [];
+      if (blocks.length === 0) { console.log(infoLine("no bash blocks yet")); return; }
+      for (const b of blocks) {
+        const code = b.exitCode === 0 ? chalk.green(`exit ${b.exitCode}`) : chalk.red(`exit ${b.exitCode}`);
+        const dur = `${b.durationMs}ms`;
+        const cmd = b.command.length > 80 ? b.command.slice(0, 77) + "..." : b.command;
+        console.log(`  ${chalk.cyan("#" + b.id)}  ${code}  ${chalk.gray(dur.padStart(6))}  ${cmd}`);
+      }
+      return;
+    }
+    case "block": {
+      const id = Number(rest[0]);
+      if (Number.isNaN(id)) { console.log(errorLine("usage: /block <id>")); return; }
+      const b = (s.ctx.blocks ?? []).find((x) => x.id === id);
+      if (!b) { console.log(errorLine(`no block #${id}`)); return; }
+      console.log(chalk.bold(`Block #${b.id}`));
+      console.log(chalk.gray(`cwd: ${b.cwd}`));
+      console.log(chalk.gray(`exit: ${b.exitCode}  duration: ${b.durationMs}ms`));
+      console.log(chalk.cyan(`$ ${b.command}`));
+      console.log(b.output || chalk.gray("(no output)"));
+      if (b.truncated) console.log(chalk.yellow("[output truncated]"));
+      return;
+    }
+    case "todos": {
+      const todos = s.ctx.todos ?? [];
+      if (todos.length === 0) { console.log(infoLine("no todos")); return; }
+      for (const t of todos) {
+        const mark = t.status === "done" ? chalk.green("[x]") : t.status === "in_progress" ? chalk.yellow("[~]") : chalk.gray("[ ]");
+        console.log(`  ${mark} ${t.content}`);
+      }
+      return;
+    }
+    case "context": {
+      console.log(s.sessionContext.summary);
+      return;
+    }
+    case "mcp": {
+      const sub = rest[0];
+      if (!sub || sub === "list") {
+        const rows = s.mcp.status();
+        if (rows.length === 0) {
+          console.log(infoLine("no MCP servers configured. add ~/.config/agentic-terminal/mcp.json or .agentic/mcp.json"));
+          return;
+        }
+        console.log(chalk.bold(`MCP servers (${rows.length}):`));
+        for (const r of rows) {
+          const color =
+            r.status === "ready" ? chalk.green :
+            r.status === "error" ? chalk.red :
+            r.status === "connecting" ? chalk.yellow :
+            chalk.gray;
+          const tail = r.status === "error" && r.error ? chalk.gray(`  — ${r.error}`) : "";
+          console.log(`  ${color(r.status.padEnd(11))} ${chalk.cyan(r.name)}  ${chalk.gray(r.toolCount + " tools")}${tail}`);
+        }
+        return;
+      }
+      if (sub === "connect") {
+        const name = rest[1];
+        if (!name) { console.log(errorLine("usage: /mcp connect <name>")); return; }
+        try {
+          await s.mcp.connect(name);
+          const st = s.mcp.status().find((x) => x.name === name);
+          console.log(successLine(`connected: ${name} (${st?.toolCount ?? 0} tools)`));
+        } catch (e) {
+          console.log(errorLine(`${name}: ${(e as Error).message}`));
+        }
+        return;
+      }
+      if (sub === "disconnect") {
+        const name = rest[1];
+        if (!name) { console.log(errorLine("usage: /mcp disconnect <name>")); return; }
+        await s.mcp.disconnect(name);
+        console.log(successLine(`disconnected: ${name}`));
+        return;
+      }
+      if (sub === "tools") {
+        const filter = rest[1];
+        const defs = s.mcp.getToolDefs();
+        const filtered = filter ? defs.filter((d) => d.name.startsWith(`mcp__${filter}__`)) : defs;
+        if (filtered.length === 0) {
+          console.log(infoLine(filter ? `no tools for '${filter}'` : "no MCP tools ready"));
+          return;
+        }
+        for (const t of filtered) {
+          console.log(`  ${chalk.cyan(t.name)}  ${chalk.gray(t.description.slice(0, 100))}`);
+        }
+        return;
+      }
+      console.log(errorLine(`unknown /mcp subcommand: ${sub}  (try: list, connect, disconnect, tools)`));
+      return;
+    }
     case "approve":
       console.log(warnLine("/approve is deprecated. Use --yes at launch (auto-approve safe+dangerous) or --yes-unsafe (adds destructive). During a session, press 'a' in the approval prompt to always-allow a specific tool type."));
       return;

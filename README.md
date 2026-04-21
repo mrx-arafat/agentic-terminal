@@ -1,19 +1,25 @@
 # Agentic Terminal
 
-An open-source, folder-scoped AI terminal agent. `cd` into any project, launch `agentic`, and get a senior DevOps engineer in your terminal — reads files, edits code, runs shell commands, fixes configs, all with your approval.
+An open-source, folder-scoped AI terminal agent. `cd` into any project, launch `agentic`, and get a senior engineer in your terminal — one prompt builds the app, installs the deps, runs the tests, and serves it, all with your approval. Type `ls`, `git status`, or any shell command and it runs as a real shell. Type an English sentence and the AI handles it. No mode switch.
 
 Bring your own API key (Gemini, Claude, OpenAI) or run fully local with Ollama. Zero telemetry. MIT licensed.
 
 ```
-~/projects/my-server $ agentic
-➜ my-server › my nginx keeps returning 502 on /api, fix it
-
-⚒ bash cat /etc/nginx/nginx.conf
-⚒ bash nginx -t
-⚒ read_file conf.d/api.conf
-⚒ edit_file conf.d/api.conf
-⚒ bash nginx -s reload
-✓ fixed: upstream port mismatched app bind port (was 3000, app on 3001)
+~/projects $ agentic
+➜ projects git:(main) › create a simple todo app
+⚒ todo_write         5 steps planned
+⚒ bash               npm create vite@latest simple-todo-app -- --template react --no-git
+⚒ cd                 simple-todo-app
+⚒ bash               npm install
+⚒ write_file         src/App.jsx  (todo UI with localStorage)
+⚒ bash               npm run build
+⚒ list_dir           dist/
+╭─ agent
+│ ✓ Todo app ready at simple-todo-app/
+│
+│ ## Next
+│ cd simple-todo-app && npm run dev   # Vite on :5173
+╰─
 ```
 
 ---
@@ -22,7 +28,8 @@ Bring your own API key (Gemini, Claude, OpenAI) or run fully local with Ollama. 
 
 - [Install](#install)
 - [Quick Start](#quick-start)
-- [What's New in v0.3.0](#whats-new-in-v030)
+- [What's New in v0.5.0](#whats-new-in-v050)
+- [Dual-mode Input: Shell + AI](#dual-mode-input-shell--ai)
 - [Features](#features)
 - [Providers](#providers)
 - [Models](#models)
@@ -76,40 +83,61 @@ That's it. The agent will read your files, propose changes, and ask for your app
 
 ---
 
-## What's New in v0.3.1
+## What's New in v0.5.0
 
-### Session Persistence Fixed
-Interactive sessions now persist indefinitely. Previously, sessions exited unexpectedly after one turn. Fixed:
-- Removed `ora` spinner (was hijacking stdin and breaking readline state)
-- Switched from fragile async iterator to event-based `rl.on('line')` pattern
-- Session stays open until `/exit` or Ctrl+D
+### Dual-mode input: shell and AI in one prompt
+No mode switch. Type `ls`, `git status`, `cd foo` and the line runs as a real shell command with live output. Type `create a todo app` and it goes to the AI. The classifier reads the first token, checks PATH, weighs English glue words, and routes automatically. Use `!` / `#` to force a lane.
 
-### New File/Folder Manipulation Tools
-Agent now has autonomous multi-file capabilities:
+### `read_all` — one-shot recursive reader
+`read all files` / `walk me through the repo` now calls a single tool that walks the directory, skips `node_modules` / `.git` / binaries, concatenates the text files with headers, and returns everything in one shot. Weak models no longer get lost orchestrating `list_dir` + `read_file` loops.
 
-| Tool | Purpose |
-|------|---------|
-| `create_dir` | `mkdir -p` directories (idempotent) |
-| `delete_file` | Remove single file (destructive tier) |
-| `delete_dir` | Remove directory (recursive flag available, destructive tier) |
-| `move_path` | Rename or move files/directories |
-| `copy_path` | Recursive copy (fails if dest exists) |
-| `multi_edit` | Batch atomic edits to one file (all-or-nothing) |
+### Background processes
+`bash background=true` detaches the command, streams its output to `.agentic/bg/<id>.log`, and returns immediately. Pairs with `bg_list` / `bg_logs` / `bg_stop` for dev servers, watchers, long builds.
 
-Enable autonomous restructuring workflows with `agentic --yes` for safer operations.
+### Resume after interrupt
+Hit `Ctrl+C` mid-work. Every in-flight tool call gets a `cancelled by user` result so history stays valid. The next message (`continue`, `finish it`, or anything else) sees a resume hint in the system prompt and picks up exactly where you left off — including weaker models.
+
+### Auto-fallback: `edit_file` on empty files writes
+Models used to error-loop when they called `edit_file` on a brand-new empty file. Now `edit_file` / `multi_edit` on an empty or missing target automatically writes instead. Error messages on real edit misuse now tell the model what to do next (`use write_file`, `read_file first`).
+
+### Built-in `scaffold-web-app` skill
+Triggers on `create react/next/vite/vue/svelte/astro/todo/blog/dashboard/landing/...`. The skill spells the non-interactive scaffold command, enforces a `scaffold → cd → install → implement → build → verify` flow, and prevents "I stopped at boilerplate" behaviour.
+
+### Nicer AI rendering
+AI replies render in a boxed `╭─ agent / ╰─` panel with a left gutter. Fenced code blocks are syntax-highlighted per language (`cli-highlight`) inside their own `┌─ lang / └─` frame. Headings, bold, italic, inline code, links, and blockquotes all have distinct colors. Shell command output sits outside the panel.
+
+### Quality-of-life
+- Git branch in prompt: `➜ ~/Devs/app git:(main) ›`
+- `cd` tab-completion on directories; file completion on other commands
+- `did you mean: cd <closest-match>` on typos
+- Live braille spinner with elapsed seconds replaces static `thinking…`
+- 3-minute Ollama timeout so the agent never hangs forever
+- Tool-message payloads clipped to 6 KB when sent to Ollama (keeps 7B context healthy)
+- Stack-aware wrap-up — HTML gets `open index.html`, Vite gets `npm run dev`, Flask gets `flask run`, etc.
 
 ---
 
-## What's New in v0.3.0
+## Dual-mode Input: Shell + AI
 
-### Skills System
-Give the agent persistent, reusable instructions scoped to a task type. Drop a `SKILL.md` file in `.agentic/skills/` and the agent auto-loads it whenever your input matches its trigger patterns. See [Skills System](#skills-system).
+Every line you type is routed to one of three lanes. The classifier runs locally — no model call needed.
 
-### MCP Integration
-Connect any [Model Context Protocol](https://modelcontextprotocol.io) server — filesystem, databases, GitHub, Slack, anything. Global config at `~/.config/agentic-terminal/mcp.json`, project-level at `.agentic/mcp.json`. See [MCP Integration](#mcp-integration).
+| You type | Lane | Why |
+|---|---|---|
+| `ls -la` | shell | first token is a real binary |
+| `cd files` | shell | shell builtin, updates the agent's cwd |
+| `git status` | shell | known tool name |
+| `NODE_ENV=prod npm run build` | shell | env-var prefix |
+| `./run.sh` | shell | path-like head |
+| `/help` | slash command | leading `/word` |
+| `!echo forced` | shell | explicit override |
+| `#explain this code` | ai | explicit override |
+| `create a todo app` | ai | natural-language cue |
+| `read all files` | ai | ambiguous English verb + prose |
+| `The fuck is this?` | ai | sentence shape |
+| `find . -name '*.ts'` | shell | `find` with shell-shaped args |
+| `find the bug in main.ts` | ai | `find` followed by prose |
 
-### Project Memory
-The agent now remembers your project across sessions. It detects your stack (Node, Python, Go, Rust, etc.), records which errors it has seen, and tracks tool effectiveness — so it gets smarter the more you use it. See [Project Memory](#project-memory).
+When the call could have gone either way, a dim hint shows why: `» shell (\`!\` prefix)` or `» ai (\`find\` reads as natural language)`. For obvious cases the hint is suppressed.
 
 ---
 
@@ -117,16 +145,19 @@ The agent now remembers your project across sessions. It detects your stack (Nod
 
 | Feature | Description |
 |---------|-------------|
-| **Folder-scoped** | Every tool runs in your `cwd`. `/cd` inside a session stays sticky. |
+| **Dual-mode input** | Shell commands and AI prompts in the same REPL, auto-classified. |
+| **Folder-scoped** | Every tool runs in your `cwd`. `cd` (as shell or slash) stays sticky across turns. |
 | **4 providers** | Gemini, Claude, OpenAI, or Ollama (local/self-hosted). |
-| **Skills** | Auto-triggered reusable instruction sets per task type. |
+| **Resumable interrupts** | Ctrl+C never leaves the conversation in a broken state; next message resumes. |
+| **Skills** | Auto-triggered reusable instruction sets per task type. Ships with `scaffold-web-app`. |
 | **MCP servers** | Connect external tools via Model Context Protocol. |
 | **Project memory** | Cross-session learning: stack detection, error patterns, tool stats. |
-| **Real tools** | `bash`, `read_file`, `write_file`, `edit_file`, `create_dir`, `delete_file`, `delete_dir`, `move_path`, `copy_path`, `multi_edit`, `list_dir`, `grep`, `glob`, `cd`. |
+| **Real tools** | `bash` (foreground & background), `read_file`, `read_all`, `write_file`, `edit_file`, `multi_edit`, `create_dir`, `delete_file`, `delete_dir`, `move_path`, `copy_path`, `list_dir`, `grep`, `glob`, `cd`, `todo_write`, `bg_list`, `bg_logs`, `bg_stop`. |
 | **Smart approval** | 3-tier sensitivity (safe / dangerous / destructive) with interactive prompt. |
+| **Styled output** | Boxed AI panel, syntax-highlighted code fences, colored markdown, git-aware prompt. |
 | **One-shot mode** | `agentic "prompt"` for scripts and CI pipelines. |
-| **Slash commands** | `/model`, `/provider`, `/cd`, `/skills`, `/status`, `/history`, and more. |
-| **Persistent sessions** | Interactive mode stays open turn-after-turn until `/exit` or Ctrl+D. |
+| **Slash commands** | `/model`, `/provider`, `/cd`, `/skills`, `/status`, `/history`, `/blocks`, `/mcp`, and more. |
+| **Tab completion** | File paths on every command; directories only for `cd`/`pushd`. |
 | **No lock-in** | MIT licensed, no telemetry, your keys stay local. |
 
 ---
@@ -186,8 +217,8 @@ Every tool call goes through a 3-tier approval system before executing.
 
 | Tier | Examples | Default behavior |
 |------|----------|-----------------|
-| **Safe** | `read_file`, `list_dir`, `grep`, `glob`, `cd` | Runs silently, no prompt |
-| **Dangerous** | `bash`, `write_file`, `edit_file`, `create_dir`, `move_path`, `copy_path`, `multi_edit`, `sudo`, `curl -X POST`, `npm publish` | Prompts — or auto-approves with `--yes` |
+| **Safe** | `read_file`, `read_all`, `list_dir`, `grep`, `glob`, `cd`, `bg_list`, `bg_logs` | Runs silently, no prompt |
+| **Dangerous** | `bash` (including `background=true`), `write_file`, `edit_file`, `multi_edit`, `create_dir`, `move_path`, `copy_path`, `bg_stop`, `sudo`, `curl -X POST`, `npm publish` | Prompts — or auto-approves with `--yes` |
 | **Destructive** | `delete_file`, `delete_dir`, `rm -rf`, `git push --force`, `DROP TABLE`, `chmod 777`, `curl \| bash` | Always prompts — even with `--yes`. Use `--yes-unsafe` to skip. |
 
 ### Interactive prompt
@@ -220,18 +251,19 @@ agentic --yes-unsafe   # auto-approve everything including destructive (use care
 ### Read/Explore (Safe)
 | Tool | What it does |
 |------|-------------|
-| `read_file` | Read file contents |
+| `read_file` | Read file contents with 1-based line numbers, offset/limit paging |
+| `read_all` | Recursive bulk reader: walks a dir, skips `node_modules`/`.git`/binaries, returns every text file concatenated with headers. Capped at 50 files × 20 KB/file by default. |
 | `list_dir` | List directory contents |
-| `grep` | Recursive regex search |
-| `glob` | Find files by name pattern |
-| `cd` | Change session working directory |
+| `grep` | Recursive regex search (ripgrep when available, smart-case, type/glob filters) |
+| `glob` | Find files by name pattern (globstar `**` supported) |
+| `cd` | Change the session's working directory (sticky) |
 
 ### Write/Edit (Dangerous)
 | Tool | What it does |
 |------|-------------|
-| `write_file` | Create or overwrite a file |
-| `edit_file` | Replace a unique string in a file |
-| `multi_edit` | Batch atomic edits to one file (all-or-nothing) |
+| `write_file` | Create or overwrite a file (preferred for new files) |
+| `edit_file` | Replace one unique occurrence of `old_string`. On empty/missing files it auto-falls-back to a write. |
+| `multi_edit` | Batch atomic edits to one file (all-or-nothing). On empty files with empty `old_string`s it writes the concatenated `new_string`s. |
 
 ### File/Folder Ops (Dangerous or Destructive)
 | Tool | What it does | Tier |
@@ -242,12 +274,21 @@ agentic --yes-unsafe   # auto-approve everything including destructive (use care
 | `delete_file` | Remove a single file | **Destructive** |
 | `delete_dir` | Remove a directory (recursive flag optional) | **Destructive** |
 
-### Shell
-| Tool | What it does | Tier |
-|------|-------------|------|
-| `bash` | Run a shell command in cwd | Dangerous (destructive if rm -rf, force-push, etc.) |
+### Shell (Dangerous)
+| Tool | What it does |
+|------|-------------|
+| `bash` | Run a shell command in cwd. Pass `timeout` in ms (default 120 000). |
+| `bash background=true` | Detach the command, return immediately with `id` + `pid` + `logPath` under `.agentic/bg/`. |
+| `bg_list` | List background processes and their status. Safe. |
+| `bg_logs` | Tail a background process's combined stdout+stderr log. Safe. |
+| `bg_stop` | Terminate a background process (SIGTERM or `force=true` for SIGKILL). Dangerous. |
 
 Password-requiring commands (`sudo`, `ssh`, `docker login`, `mysql`, `psql`) run through a PTY so interactive prompts work correctly.
+
+### Planning
+| Tool | What it does |
+|------|-------------|
+| `todo_write` | Write or replace the session's plan. Each todo has `id`, `content`, `status` (`pending`/`in_progress`/`done`). Visible via `/todos`. |
 
 ---
 
@@ -262,6 +303,14 @@ Available while in an interactive session (`agentic` with no prompt):
 /status                  session status (provider, model, cwd, tokens, uptime)
 /history                 recent conversation turns and tool calls
 /tools                   list all tools and their always-allow status
+/blocks                  list bash command blocks (command, exit, duration) run this session
+/block <id>              show the full captured output of a block
+/todos                   show the current plan
+/context                 show auto-detected project context summary
+/mcp                     list MCP servers and status
+/mcp connect <name>      (re)connect an MCP server
+/mcp disconnect <name>   disconnect an MCP server
+/mcp tools [server]      list MCP tools (optionally filter by server)
 /model <id>              switch model mid-session
 /provider <name>         switch provider (gemini|claude|openai|ollama)
 /models                  list models for current provider
@@ -522,7 +571,7 @@ npm test                        # run all tests once
 npm run test:watch              # watch mode for development
 ```
 
-All 61 tests should pass. If they don't, open an issue.
+All 136 tests should pass. If they don't, open an issue.
 
 ---
 
@@ -536,8 +585,15 @@ All 61 tests should pass. If they don't, open an issue.
 - [x] Project memory — cross-session stack detection and learning
 - [x] Session persistence — interactive sessions stay open across turns
 - [x] File/folder tools — `create_dir`, `delete_file`, `delete_dir`, `move_path`, `copy_path`, `multi_edit`
+- [x] Dual-mode input (shell + AI auto-routed) with `!` / `#` overrides
+- [x] `read_all` bulk reader with binary/skip-dir handling
+- [x] Background processes — `bash background=true`, `bg_list`, `bg_logs`, `bg_stop`
+- [x] Resume-after-interrupt: Ctrl+C never breaks history
+- [x] Styled AI output with syntax-highlighted code fences and a boxed panel
+- [x] Git branch in prompt, tab-completion, `did you mean` on cd typos
+- [x] Built-in `scaffold-web-app` skill for end-to-end project creation
+- [ ] Streaming responses with live token rendering
 - [ ] MCP server spawning and live tool injection
-- [ ] Streaming responses
 - [ ] More tools: `web_fetch`, `apply_patch`, `run_tests`
 - [ ] Windows PowerShell tool variant
 - [ ] Web UI for memory and skill management

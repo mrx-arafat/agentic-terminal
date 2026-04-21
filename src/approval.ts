@@ -26,8 +26,9 @@ export async function requestApproval(opts: {
   level: Sensitivity;
   reason?: string;
   rl: readline.Interface;
+  diff?: string;
 }): Promise<ApprovalResult> {
-  const { toolName, argsPreview, level, rl } = opts;
+  const { toolName, argsPreview, level, rl, diff } = opts;
 
   let color = chalk.white;
   if (level === "safe") color = chalk.green;
@@ -36,6 +37,7 @@ export async function requestApproval(opts: {
 
   const reasonMsg = opts.reason ? ` (${opts.reason})` : "";
   console.log(color(`[${level.toUpperCase()}] ${toolName}(${argsPreview})${reasonMsg}`));
+  if (diff) console.log(diff);
 
   const prompt = `  [y]es [n]o [a]lways [s]uggest > `;
   const raw = (await ask(rl, prompt)).trim().toLowerCase();

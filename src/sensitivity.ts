@@ -38,8 +38,14 @@ const DANGEROUS_BASH = [
 ];
 
 export function classify(input: ClassifyInput): { level: Sensitivity; reason?: string } {
-  if (["read_file", "list_dir", "grep", "glob", "cd"].includes(input.tool)) {
+  if (input.tool.startsWith("mcp__")) {
+    return { level: "dangerous", reason: "mcp external call" };
+  }
+  if (["read_file", "read_all", "list_dir", "grep", "glob", "cd", "bg_list", "bg_logs"].includes(input.tool)) {
     return { level: "safe" };
+  }
+  if (input.tool === "bg_stop") {
+    return { level: "dangerous", reason: "bg_stop" };
   }
   if (["write_file", "edit_file", "multi_edit", "create_dir", "move_path", "copy_path"].includes(input.tool)) {
     return { level: "dangerous", reason: input.tool };
