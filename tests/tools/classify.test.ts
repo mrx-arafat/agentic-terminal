@@ -7,6 +7,23 @@ describe("input classifier", () => {
     expect(classify("   ").kind).toBe("empty");
   });
 
+  it("routes resume / loop-builtin words to AI (continue, resume, proceed, go)", () => {
+    expect(classify("continue").kind).toBe("ai");
+    expect(classify("Continue").kind).toBe("ai");
+    expect(classify("continue.").kind).toBe("ai");
+    expect(classify("resume").kind).toBe("ai");
+    expect(classify("proceed").kind).toBe("ai");
+    expect(classify("break").kind).toBe("ai");
+    expect(classify("retry").kind).toBe("ai");
+  });
+
+  it("routes resume phrases to AI", () => {
+    expect(classify("go on").kind).toBe("ai");
+    expect(classify("keep going").kind).toBe("ai");
+    expect(classify("carry on").kind).toBe("ai");
+    expect(classify("try again").kind).toBe("ai");
+  });
+
   it("routes slash commands", () => {
     const c = classify("/help");
     expect(c.kind).toBe("slash");

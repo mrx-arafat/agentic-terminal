@@ -28,8 +28,10 @@ Bring your own API key (Gemini, Claude, OpenAI) or run fully local with Ollama. 
 
 - [Install](#install)
 - [Quick Start](#quick-start)
+- [What's New in v0.5.1](#whats-new-in-v051)
 - [What's New in v0.5.0](#whats-new-in-v050)
 - [Dual-mode Input: Shell + AI](#dual-mode-input-shell--ai)
+- [Keyboard Shortcuts](#keyboard-shortcuts)
 - [Features](#features)
 - [Providers](#providers)
 - [Models](#models)
@@ -37,9 +39,14 @@ Bring your own API key (Gemini, Claude, OpenAI) or run fully local with Ollama. 
 - [Tools Reference](#tools-reference)
 - [Slash Commands](#slash-commands)
 - [CLI Reference](#cli-reference)
+- [Configuration Reference](#configuration-reference)
 - [Skills System](#skills-system)
 - [MCP Integration](#mcp-integration)
 - [Project Memory](#project-memory)
+- [Recipes](#recipes)
+- [Architecture](#architecture)
+- [Troubleshooting](#troubleshooting)
+- [FAQ](#faq)
 - [Security](#security)
 - [Develop](#develop)
 - [License](#license)
@@ -80,6 +87,25 @@ atx "debug the crash in production.log"
 ```
 
 That's it. The agent will read your files, propose changes, and ask for your approval before anything dangerous runs.
+
+---
+
+## What's New in v0.5.1
+
+### Esc to interrupt a running turn
+Pressing **Esc** while the AI is thinking (or while it's executing tool calls) aborts the current turn and hands the prompt back to you instantly — no waiting for the model or network. The history stays valid: every in-flight tool call is recorded with `cancelled by user`, and the next message is auto-tagged with a resume hint so the model picks up exactly where it left off. Ctrl+C does the same thing. Works across all four providers (Gemini, Claude, OpenAI, Ollama).
+
+Under the hood: dual-path detection (`keypress` for post-readline and raw-byte `data` events for instant response), forced raw-mode while a turn is active so bare Esc isn't line-buffered, and `\x1b\x1b` / `\x1b` both accepted for terminal-compatibility.
+
+### Smarter resume-word classification
+`continue`, `resume`, `proceed`, `go on`, `keep going`, `carry on`, `retry`, `try again`, `break`, and `return` now always route to the AI — never the shell. Previously `continue` triggered `bash: continue: only meaningful in a 'for', 'while', or 'until' loop` because it's a bash builtin that passes `command -v`. Now you can interrupt a turn with Esc and just type `continue` to resume.
+
+### Debug mode for keystroke inspection
+Set `AGENTIC_DEBUG_KEYS=1` to print every keypress and raw data byte stdin receives, with active-turn state. Useful if Esc doesn't fire on your terminal — paste the hex output and it's easy to add your terminal's escape code.
+
+```bash
+AGENTIC_DEBUG_KEYS=1 agentic
+```
 
 ---
 
@@ -138,6 +164,42 @@ Every line you type is routed to one of three lanes. The classifier runs locally
 | `find the bug in main.ts` | ai | `find` followed by prose |
 
 When the call could have gone either way, a dim hint shows why: `» shell (\`!\` prefix)` or `» ai (\`find\` reads as natural language)`. For obvious cases the hint is suppressed.
+
+---
+
+## Keyboard Shortcuts
+
+### At the prompt (idle)
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Completion — directories for `cd`/`pushd`, files/commands elsewhere |
+| `↑` / `↓` | Walk prompt history (readline default) |
+| `Ctrl+A` / `Ctrl+E` | Start / end of line |
+| `Ctrl+U` | Clear current input line |
+| `Ctrl+W` | Delete previous word |
+| `Ctrl+L` | Clear screen |
+| `Ctrl+C` | Cancel current input line — type `/exit` to quit |
+| `Ctrl+D` | EOF — quit the session |
+
+### While a turn is running (AI is thinking or tools are executing)
+
+| Key | Action |
+|-----|--------|
+| `Esc` | **Interrupt the turn.** In-flight tool calls get `cancelled by user`, history stays valid, prompt returns. |
+| `Ctrl+C` | Same as Esc — interrupt the turn. |
+
+After an interrupt, the next message you send is auto-tagged with a resume hint so the model continues the original plan if you say `continue`, `go on`, or similar — or pivots if you give it a new instruction.
+
+### In the approval prompt (when a dangerous tool fires)
+
+| Key | Action |
+|-----|--------|
+| `y` | Approve and run |
+| `n` | Reject — agent gets "rejected by user" |
+| `a` | Approve and always-allow this tool for the rest of the session |
+| `s` | Reject and type a suggested alternative |
+| `Esc` | Reject + abort the whole turn |
 
 ---
 
@@ -348,6 +410,75 @@ Flags:
 
 ---
 
+## Configuration Reference
+
+### Config file
+
+Path: `~/.config/agentic-terminal/config.json` (chmod 0600).
+
+```json
+{
+  "provider": "ollama",
+  "geminiApiKey": "...",
+  "claudeApiKey": "...",
+  "openaiApiKey": "...",
+  "models": {
+    "gemini": "gemini-2.5-flash",
+    "claude": "claude-sonnet-4-5",
+    "openai": "gpt-4o-mini",
+    "ollama": "qwen2.5:latest"
+  },
+  "autoApprove": false,
+  "maxIterations": 25
+}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `provider` | `"gemini" \| "claude" \| "openai" \| "ollama"` | `gemini` | Active provider |
+| `geminiApiKey` | string | — | Google AI Studio key |
+| `claudeApiKey` | string | — | Anthropic key |
+| `openaiApiKey` | string | — | OpenAI key |
+| `models.<provider>` | string | per-provider default | Active model per provider |
+| `autoApprove` | bool | `false` | Auto-approve safe + dangerous (same as `--yes`) |
+| `maxIterations` | number | `25` | Max tool-call iterations per turn before giving up |
+
+Edit via `agentic setup`, slash commands (`/provider`, `/model`, `/save`), or directly in the JSON file.
+
+### Environment variables
+
+Env vars always override the config file.
+
+| Variable | Purpose |
+|----------|---------|
+| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini API key |
+| `ANTHROPIC_API_KEY` or `CLAUDE_API_KEY` | Claude API key |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `OLLAMA_HOST` | Override Ollama endpoint (default `http://localhost:11434`) |
+| `AGENTIC_DEBUG_KEYS=1` | Dump every keystroke / raw byte to stderr (Esc troubleshooting) |
+| `NO_COLOR=1` | Disable all ANSI colors in output |
+| `FORCE_COLOR=1` | Force colors even when stdout isn't a TTY |
+
+### Per-project files
+
+| Path | Purpose |
+|------|---------|
+| `.agentic-rules.md` | Standing instructions injected into every turn |
+| `.agentic/skills/<name>/SKILL.md` | Project-local skill (overrides global skills by name) |
+| `.agentic/mcp.json` | Project-local MCP server config (overrides global) |
+| `.agentic/bg/<id>.log` | Logs for background processes started with `bash background=true` |
+
+### Per-user files
+
+| Path | Purpose |
+|------|---------|
+| `~/.config/agentic-terminal/config.json` | Provider + model + API keys |
+| `~/.config/agentic-terminal/skills/<name>/SKILL.md` | Global skills available everywhere |
+| `~/.config/agentic-terminal/mcp.json` | Global MCP servers |
+| `~/.agentic/projects/<name>.json` | Per-project memory (stack, error patterns, tool stats) |
+
+---
+
 ## Skills System
 
 Skills let you encode reusable, task-specific instructions that the agent automatically picks up based on what you type.
@@ -520,6 +651,298 @@ Create `.agentic-rules.md` in your project root to give the agent standing instr
 
 ---
 
+## Recipes
+
+Practical patterns for day-to-day work. Each one assumes you're at `agentic`'s interactive prompt inside a project.
+
+### Scaffold a React app and run it
+
+```
+create a React app called inventory-ui and run the dev server in the background
+```
+
+One prompt. The built-in `scaffold-web-app` skill picks the right `npm create vite` flags, installs deps, launches the dev server with `bash background=true`, and tells you the port.
+
+### Explain a codebase you've never seen
+
+```
+walk me through this repo
+```
+
+Calls `read_all` with a 30-file cap, then summarizes architecture, entry points, and noteworthy patterns. No `list_dir → read_file → list_dir` ping-pong.
+
+### Debug a failing test
+
+```
+run npm test and fix whatever breaks
+```
+
+The agent runs tests, reads the first failing stack frame, opens the relevant source file, proposes a fix, and re-runs. If it needs more than one iteration, it updates the todo list so you can watch progress with `/todos`.
+
+### Fix a bug you can describe but can't locate
+
+```
+there's a race condition in the websocket reconnect logic — find it and fix it
+```
+
+`grep` for websocket/reconnect handlers → `read_file` the hot spots → propose a diff. The diff shows as a preview before the `edit_file` approval prompt.
+
+### Batch-rename across a codebase
+
+```
+rename getUserById to loadUser everywhere, including tests
+```
+
+`grep` finds call sites → `multi_edit` applies all changes atomically. If any single edit fails the whole batch rolls back.
+
+### Try a command without committing
+
+Press Esc mid-run if the approach is wrong:
+
+```
+migrate all the CSS modules to Tailwind
+# agent starts ... press Esc
+# prompt returns; type:
+on second thought, just do the buttons in src/components/
+```
+
+History is preserved. The model sees the cancelled tool calls and the new instruction.
+
+### Run a long-running dev server
+
+```
+bash npm run dev background=true
+```
+
+The server stays up across turns. Check its logs anytime:
+
+```
+/blocks
+/bg_logs 0
+```
+
+Kill it when done:
+
+```
+bg_stop 0
+```
+
+### Shell + AI on the same line
+
+```
+➜ my-app › git status
+# (shell output)
+
+➜ my-app › what changed in the last commit?
+# (AI reads git log + diff and summarizes)
+```
+
+No mode switch. Classifier routes automatically.
+
+### One-shot for scripts and CI
+
+```bash
+agentic --yes "update the changelog with everything since v0.5.0" > out.log
+```
+
+`--yes` auto-approves safe + dangerous. Destructive tools still prompt — use `--yes-unsafe` for full unattended.
+
+---
+
+## Architecture
+
+### Process model
+
+```
+agentic (CLI)
+ └─ main REPL (readline)
+    ├─ classifier      → slash / shell / ai
+    ├─ shell runner    → spawn bash -lc (sync) or node-pty (sudo/ssh/...)
+    ├─ slash handler   → in-process commands (/model, /cd, /skills, ...)
+    └─ agent.runTurn() → provider chat → tool loop → approval prompt
+       ├─ tools        → read_file, bash, edit_file, ... (in-process)
+       └─ mcp tools    → JSON-RPC over stdio or HTTP to external servers
+```
+
+Turn control flow:
+
+1. User submits a line → classifier routes to one of three lanes.
+2. AI lane: a fresh `AbortController` wraps the turn. Its signal is threaded into every provider request and every tool call.
+3. `provider.chat()` runs the model. Returns text + tool calls.
+4. Safe, read-only tool calls run in parallel. Side-effect tools run in order.
+5. Each result is pushed back into history as a `role: tool` message with the matching `toolCallId`.
+6. Loop until the model returns no more tool calls, or `abortSignal.aborted === true`, or `maxIterations` is reached.
+
+On Esc / Ctrl+C, the abort controller fires. Any in-flight `fetch` unwinds, any pending serial tool is skipped, and the `finally` block writes a `cancelled by user` entry for every tool call that didn't complete — so the assistant↔tool pairing in the conversation history stays valid for the next turn.
+
+### Interrupt path (Esc / Ctrl+C)
+
+```
+keypress 'escape'  ─┐
+raw 0x1b byte     ─┼─► wireEscInterrupt → turnAbort.abort() ─► AbortSignal
+readline SIGINT   ─┘                                           │
+                                                               ▼
+                                            ┌───────────┬────────────┐
+                                            │ fetch     │ tool loop  │
+                                            │ aborts    │ skips      │
+                                            └───────────┴────────────┘
+                                                    │
+                                                    ▼
+                                   history: role=tool, result="cancelled by user"
+                                                    │
+                                                    ▼
+                                   next turn: buildResumeHint() tags system prompt
+```
+
+### Why three-path Esc detection
+
+Different terminals deliver Esc differently. We support all of them:
+
+1. `keypress` event — after Node's ~500 ms escape-code disambiguation window, fires with `key.name === 'escape'`.
+2. `data` event with `\x1b` — raw single ESC byte, instant.
+3. `data` event with `\x1b\x1b` — double-ESC (some terminals meta-prefix bare Esc), instant.
+
+Forcing `setRawMode(true)` while a turn is active ensures bare Esc isn't line-buffered.
+
+### Source map
+
+| Module | Purpose |
+|--------|---------|
+| `src/index.ts` | CLI parse, session init, main REPL loop, slash dispatcher, interrupt wiring |
+| `src/classify.ts` | Routes each input line to slash / shell / ai / empty |
+| `src/agent.ts` | `runTurn` — provider chat + tool loop + resume hint builder |
+| `src/tools.ts` | All native tool definitions and handlers |
+| `src/approval.ts` | Interactive approval prompt + `CancelError` |
+| `src/sensitivity.ts` | Classifies each tool call as safe / dangerous / destructive |
+| `src/interrupt.ts` | Esc detection (keypress + raw bytes), raw-mode management |
+| `src/preview.ts` | Diff previews for file-modifying tools |
+| `src/pty.ts` | `node-pty` wrapper for interactive commands (`sudo`, `ssh`, …) |
+| `src/shell.ts` | Tab completion + `cd` typo suggestions |
+| `src/session.ts` | Token counts, tool counts, turn history |
+| `src/context.ts` | Auto-detects project stack + builds a context summary |
+| `src/providers/` | Gemini / Claude / OpenAI / Ollama adapters |
+| `src/skills/` | Skills loader, trigger matcher, system-prompt injection |
+| `src/mcp/` | MCP server config loader and JSON-RPC client |
+| `src/memory/` | Per-project memory store + stack detection |
+| `src/ui.ts` | Markdown rendering, syntax highlighting, boxed panels |
+
+---
+
+## Troubleshooting
+
+### Esc doesn't interrupt the turn
+
+1. Confirm you're on **0.5.1 or newer**: `agentic --version`.
+2. If you installed from source, rebuild — the `agentic` binary runs `dist/`, not `src/`:
+   ```bash
+   cd <your-clone>
+   npm run build
+   ```
+3. Run with debug mode to see what your terminal sends:
+   ```bash
+   AGENTIC_DEBUG_KEYS=1 agentic
+   ```
+   Press Esc during a turn. Each keystroke prints `[dbg] data len=N hex=... active=...` to stderr. If you see something other than `1b` or `1b 1b`, open an issue with the output.
+
+### `continue` / `resume` runs in the shell instead of the AI
+
+You're on < 0.5.1. Upgrade (`npm install -g agentic-terminal@latest`). v0.5.1 short-circuits loop-builtin words before the PATH probe.
+
+### `no API key for <provider>`
+
+Either run `agentic setup` to configure one, set the matching env var (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`), or switch to Ollama: `agentic --provider ollama`.
+
+### `reached max iterations (25); stopping`
+
+Default is 25 tool-call iterations per turn. Bump in `~/.config/agentic-terminal/config.json`:
+```json
+{ "maxIterations": 50 }
+```
+
+### Ollama hangs or times out
+
+Ollama requests use a 3-minute timeout. For 70B+ models on CPU, that may not be enough. Work around it by using a smaller model (`qwen2.5:7b`, `llama3.2`) or streaming-friendly setups. Also confirm `ollama serve` is running: `curl localhost:11434/api/tags`.
+
+### Scaffolders (Vite, create-next-app) fail with "Operation cancelled"
+
+They detect a non-TTY stdin and bail. The `bash` tool already closes stdin so they see EOF — if you still hit this, pass `--yes` flags where available, or run the command inside an interactive shell: `bash -lic "npm create vite@latest myapp -- --template react"`.
+
+### Large `npm install` / `pytest` calls time out
+
+The `bash` tool's default timeout is 120 s. In a prompt you can ask the agent to pass `timeout: 600000` (10 minutes):
+
+```
+run npm install with a 10-minute timeout
+```
+
+### Tab completion doesn't show anything
+
+Happens when stdin isn't a TTY (piped input, nested emulator). Confirm `process.stdin.isTTY` is `true`:
+```bash
+node -e "console.log(process.stdin.isTTY)"
+```
+
+### `command not found: agentic` after install
+
+Global bin wasn't added to PATH. Either:
+```bash
+echo 'export PATH="$(npm bin -g):$PATH"' >> ~/.zshrc
+```
+or use `npx agentic-terminal`.
+
+---
+
+## FAQ
+
+### How is this different from Claude Code / Cursor / Aider?
+
+**Folder-scoped and provider-agnostic.** Claude Code is Anthropic-only; Cursor is an IDE; Aider needs git. Agentic Terminal runs in any folder, supports four providers, ships with MCP + skills + project memory, and has dual-mode shell+AI input so you don't keep switching windows.
+
+### Does it send my code anywhere?
+
+Only to the provider you picked. No telemetry, no analytics, no intermediate servers. If you run Ollama it never leaves your machine.
+
+### Are my API keys safe?
+
+Stored at `~/.config/agentic-terminal/config.json` with `chmod 0600`. They're never logged, never echoed back, and never sent anywhere except the matching provider's API. Environment variables always take precedence over the config file.
+
+### Can I run it in CI?
+
+Yes. One-shot mode + `--yes` (or `--yes-unsafe`) + a non-interactive provider:
+```bash
+agentic --yes --provider openai --model gpt-4o-mini "run tests and update the changelog"
+```
+
+### Can I use my own model / fine-tune?
+
+`agentic --model my-custom-id`. The CLI passes the ID through verbatim to the provider. For Ollama, any model you've pulled with `ollama pull` works.
+
+### How do I stop the agent from touching certain files?
+
+Put them in a `.gitignore`-like rules file: `.agentic-rules.md` in your project root. The agent reads it on startup and treats it as standing instructions.
+
+### Can I script it?
+
+Yes — the one-shot mode (`agentic "prompt"`) is designed for scripts. Combine with `--yes` / `--yes-unsafe` for unattended runs. Stdout is the agent's final text output; tool traces go to stderr.
+
+### Does it work on Windows?
+
+Works under WSL2 (treat it as Linux). Native Windows (PowerShell / cmd) isn't supported yet — it's on the roadmap.
+
+### Why does it sometimes re-read the same file?
+
+When your `cwd` changes between turns, previous `list_dir` / `read_file` results no longer describe the current location. The system prompt tells the model to re-probe after a `cd`. This is intentional — stale context causes worse bugs.
+
+### Can I disable approval prompts for a trusted project?
+
+`agentic --yes` for safe + dangerous, `agentic --yes-unsafe` for everything including destructive. You can also press `a` in any approval prompt to always-allow that specific tool for the rest of the session.
+
+### How do I contribute?
+
+Fork, PR, open issues. See the `Develop` section below for test/build commands.
+
+---
+
 ## Security
 
 - API keys stored at `~/.config/agentic-terminal/config.json` with `0600` permissions
@@ -571,7 +994,7 @@ npm test                        # run all tests once
 npm run test:watch              # watch mode for development
 ```
 
-All 136 tests should pass. If they don't, open an issue.
+All 154 tests should pass. If they don't, open an issue.
 
 ---
 
@@ -589,6 +1012,8 @@ All 136 tests should pass. If they don't, open an issue.
 - [x] `read_all` bulk reader with binary/skip-dir handling
 - [x] Background processes — `bash background=true`, `bg_list`, `bg_logs`, `bg_stop`
 - [x] Resume-after-interrupt: Ctrl+C never breaks history
+- [x] Esc-to-interrupt with dual-path detection (v0.5.1)
+- [x] Resume-word classification (`continue`, `go on`, `retry` …) always routes to AI (v0.5.1)
 - [x] Styled AI output with syntax-highlighted code fences and a boxed panel
 - [x] Git branch in prompt, tab-completion, `did you mean` on cd typos
 - [x] Built-in `scaffold-web-app` skill for end-to-end project creation

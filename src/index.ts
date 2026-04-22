@@ -34,8 +34,9 @@ import { detectProjectType, getProjectName } from "./memory/detector.js";
 import { MCPManager } from "./mcp/manager.js";
 import { buildSessionContext, type SessionContext } from "./context.js";
 import type { BgProcess, BlockRecord, TodoItem } from "./blocks.js";
+import { wireEscInterrupt } from "./interrupt.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.1";
 
 function usage(): void {
   console.log(`
@@ -236,14 +237,30 @@ async function main(): Promise<void> {
     completer: (line: string) => buildCompletions(line, ctx.cwd),
   });
 
+  let turnInProgress = false;
+  let turnAbort: AbortController | null = null;
+  let rlClosed = false;
+
   rl.on("SIGINT", () => {
+    if (turnInProgress && turnAbort) {
+      turnAbort.abort();
+      if (process.stdout.isTTY) process.stdout.write("\r\x1b[2K");
+      console.log(warnLine("(Ctrl+C) interrupting — your next message will resume from here"));
+      return;
+    }
     console.log(infoLine("\n(Ctrl+C) type /exit to quit — Ctrl+D for EOF"));
     rl.prompt();
   });
 
-  let turnInProgress = false;
-  let turnAbort: AbortController | null = null;
-  let rlClosed = false;
+  const detachEsc = wireEscInterrupt(process.stdin, {
+    isActive: () => turnInProgress && turnAbort !== null && !turnAbort.signal.aborted,
+    onInterrupt: () => {
+      if (!turnAbort || turnAbort.signal.aborted) return;
+      turnAbort.abort();
+      if (process.stdout.isTTY) process.stdout.write("\r\x1b[2K");
+      console.log(warnLine("(Esc) interrupting — your next message will resume from here"));
+    },
+  });
 
   const showPrompt = (): void => {
     if (rlClosed) return;
@@ -299,6 +316,7 @@ async function main(): Promise<void> {
     rl.once("close", () => {
       rlClosed = true;
       if (turnAbort) turnAbort.abort();
+      detachEsc();
       resolve();
     });
     showPrompt();

@@ -45,6 +45,20 @@ const SHELL_HINTS = new Set([
   "clear", "reset",
 ]);
 
+/** Words that are bash builtins but meaningless as standalone shell input
+ *  (loop flow-control) or that users type to resume an interrupted AI turn.
+ *  These MUST route to AI — running them in bash just prints an error. */
+const AI_ONLY_WORDS = new Set([
+  "continue", "resume", "proceed", "go", "keep", "carry",
+  "break", "return",
+  "retry", "redo", "again",
+]);
+
+/** Multi-word resume phrases. Matched case-insensitively on the full trimmed input. */
+const AI_ONLY_PHRASES = [
+  "go on", "keep going", "carry on", "try again", "pick up", "pick up where you left off",
+];
+
 /** English-verb commands. Classify as shell only if the rest of the line has
  *  a shell-ish shape (flag, path, operator). Otherwise → AI. */
 const AMBIGUOUS_HEADS = new Set([
@@ -113,6 +127,16 @@ export function classify(input: string): Classification {
   }
   if (trimmed.startsWith("#") || trimmed.startsWith("?")) {
     return { kind: "ai", payload: trimmed.slice(1).trimStart(), reason: `\`${trimmed[0]}\` prefix` };
+  }
+
+  // Resume / loop-builtin words — always AI. `continue` is a bash builtin that
+  // passes `command -v`, so we must short-circuit before the PATH probe.
+  const lower = trimmed.toLowerCase().replace(/[.!?,;]+$/, "").trim();
+  if (AI_ONLY_WORDS.has(lower)) {
+    return { kind: "ai", payload: trimmed, reason: `resume word \`${lower}\`` };
+  }
+  if (AI_ONLY_PHRASES.includes(lower)) {
+    return { kind: "ai", payload: trimmed, reason: `resume phrase` };
   }
 
   // Sentence-shape detection: capital-letter head + sentence-ending punctuation,
