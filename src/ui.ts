@@ -98,7 +98,7 @@ function shortCwd(cwd: string): string {
   return [parts[0], "…", ...parts.slice(-2)].join(path.sep);
 }
 
-function gitBranch(cwd: string): string | undefined {
+export function gitBranch(cwd: string): string | undefined {
   let dir = cwd;
   for (let i = 0; i < 30; i++) {
     const head = path.join(dir, ".git", "HEAD");
@@ -122,36 +122,6 @@ export function promptPrefix(cwd: string): string {
   const branch = gitBranch(cwd);
   const gitPart = branch ? ` ${chalk.yellow("git:(" + branch + ")")}` : "";
   return `\n${chalk.green("➜")} ${chalk.bold.blue(short)}${gitPart} ${chalk.cyan("›")} `;
-}
-
-export function toolLine(name: string, args: Record<string, unknown>): string {
-  const preview = previewArgs(args);
-  return `${chalk.magenta("⚒")} ${chalk.bold.magenta(name)}${preview ? " " + chalk.gray(preview) : ""}`;
-}
-
-function previewArgs(args: Record<string, unknown>): string {
-  const priority = ["command", "path", "pattern"];
-  for (const key of priority) {
-    if (key in args) {
-      const v = String(args[key]);
-      return v.length > 120 ? v.slice(0, 117) + "..." : v;
-    }
-  }
-  const entries = Object.entries(args);
-  if (entries.length === 0) return "";
-  const s = JSON.stringify(args);
-  return s.length > 120 ? s.slice(0, 117) + "..." : s;
-}
-
-export function toolResult(name: string, result: string, ok: boolean): string {
-  const head = ok ? chalk.green("✓") : chalk.red("✗");
-  const nameColor = ok ? chalk.bold : chalk.bold.red;
-  const railColor = ok ? chalk.gray : chalk.red;
-  const rail = railColor("│ ");
-  const lines = result.trim().split("\n");
-  const body = lines.slice(0, 20).map((l) => rail + chalk.gray(l)).join("\n");
-  const more = lines.length > 20 ? "\n" + rail + chalk.gray(`… (+${lines.length - 20} lines)`) : "";
-  return `${head} ${nameColor(name)}\n${body}${more}`;
 }
 
 export function errorLine(msg: string): string {

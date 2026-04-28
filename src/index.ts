@@ -1,4 +1,3 @@
-import readline from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -20,12 +19,13 @@ import type { Message } from "./providers/types.js";
 import type { ToolContext } from "./tools.js";
 import { runSetup, printModelList, printProviderList } from "./setup.js";
 import { runTurn } from "./agent.js";
-import { banner, errorLine, infoLine, promptPrefix, successLine, warnLine } from "./ui.js";
+import { banner, errorLine, gitBranch, infoLine, successLine, warnLine } from "./ui.js";
+import { readInput, loadHistory, appendHistory } from "./input.js";
 import { createSession, formatStatus, formatHistory, type SessionState } from "./session.js";
 import { TOOL_DEFS } from "./tools.js";
 import { CancelError } from "./approval.js";
 import { classify as classifyInput } from "./classify.js";
-import { buildCompletions, expandTilde, suggestDir } from "./shell.js";
+import { expandTilde, suggestDir } from "./shell.js";
 import { spawn } from "node:child_process";
 import { loadSkills, mergeSkills } from "./skills/loader.js";
 import type { Skill } from "./skills/types.js";
@@ -210,10 +210,9 @@ async function main(): Promise<void> {
   process.once("SIGTERM", () => { void shutdown().finally(() => process.exit(0)); });
 
   if (args.prompt) {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     const controller = new AbortController();
     try {
-      await runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: controller.signal, skills, mcp, sessionContext }, args.prompt);
+      await runTurn({ cfg, provider, ctx, history, session, abortSignal: controller.signal, skills, mcp, sessionContext }, args.prompt);
     } catch (e) {
       if (e instanceof CancelError || (e as Error).name === "CancelError") {
         controller.abort();
@@ -222,7 +221,6 @@ async function main(): Promise<void> {
         throw e;
       }
     } finally {
-      rl.close();
       await shutdown();
     }
     return;
@@ -230,27 +228,11 @@ async function main(): Promise<void> {
 
   console.log(banner(provider.name, resolveModel(cfg), ctx.cwd));
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: process.stdin.isTTY,
-    completer: (line: string) => buildCompletions(line, ctx.cwd),
-  });
-
+  const histList = loadHistory();
   let turnInProgress = false;
   let turnAbort: AbortController | null = null;
-  let rlClosed = false;
-
-  rl.on("SIGINT", () => {
-    if (turnInProgress && turnAbort) {
-      turnAbort.abort();
-      if (process.stdout.isTTY) process.stdout.write("\r\x1b[2K");
-      console.log(warnLine("(Ctrl+C) interrupting — your next message will resume from here"));
-      return;
-    }
-    console.log(infoLine("\n(Ctrl+C) type /exit to quit — Ctrl+D for EOF"));
-    rl.prompt();
-  });
+  let resumeText = "";
+  let lastInterruptAt = 0;
 
   const detachEsc = wireEscInterrupt(process.stdin, {
     isActive: () => turnInProgress && turnAbort !== null && !turnAbort.signal.aborted,
@@ -258,72 +240,84 @@ async function main(): Promise<void> {
       if (!turnAbort || turnAbort.signal.aborted) return;
       turnAbort.abort();
       if (process.stdout.isTTY) process.stdout.write("\r\x1b[2K");
-      console.log(warnLine("(Esc) interrupting — your next message will resume from here"));
+      console.log(warnLine("interrupted — your next message will resume from here"));
     },
   });
 
-  const showPrompt = (): void => {
-    if (rlClosed) return;
-    rl.setPrompt(promptPrefix(ctx.cwd));
-    rl.prompt();
-  };
+  while (true) {
+    const branch = gitBranch(ctx.cwd);
+    const headerInfo = `${provider.name} · ${resolveModel(cfg)}`;
+    const result = await readInput({
+      cwd: ctx.cwd,
+      branch,
+      header: headerInfo,
+      history: histList,
+      initial: resumeText,
+      hintLines: [
+        chalk.gray("enter") + " submit  " + chalk.gray("shift/alt+enter") + " newline  " + chalk.gray("tab") + " complete  " + chalk.gray("↑↓") + " history  " + chalk.gray("ctrl+d") + " exit",
+      ],
+      slashCommands: SLASH_COMMANDS,
+      onSubmit: (text) => appendHistory(histList, text),
+    });
+    resumeText = "";
 
-  rl.on("line", (raw: string): void => {
-    if (turnInProgress) return;
-    const input = raw.trim();
-    if (!input) { showPrompt(); return; }
+    if (result.kind === "eof") break;
+    if (result.kind === "interrupt") {
+      const now = Date.now();
+      if (now - lastInterruptAt < 1500) { console.log(infoLine("bye")); break; }
+      lastInterruptAt = now;
+      console.log(infoLine("(Ctrl+C) press again to exit, or type /exit"));
+      continue;
+    }
+    const input = result.text.trim();
+    if (!input) continue;
 
     const c = classifyInput(input);
 
     if (c.kind === "slash") {
-      void handleSlash(c.payload, { cfg, ctx, history, session, skills, mcp, sessionContext }).then((done) => {
-        if (done === "exit") { rl.close(); return; }
-        showPrompt();
-      });
-      return;
+      const done = await handleSlash(c.payload, { cfg, ctx, history, session, skills, mcp, sessionContext });
+      if (done === "exit") break;
+      continue;
     }
 
     if (c.kind === "shell") {
       if (shouldShowHint(c.reason)) console.log(chalk.gray(`» shell (${c.reason})`));
-      turnInProgress = true;
-      void runShell(c.payload, ctx)
-        .catch((e: unknown) => { console.log(errorLine((e as Error).message)); })
-        .finally(() => { turnInProgress = false; showPrompt(); });
-      return;
+      try {
+        await runShell(c.payload, ctx);
+      } catch (e) {
+        console.log(errorLine((e as Error).message));
+      }
+      continue;
     }
 
     if (shouldShowHint(c.reason)) console.log(chalk.gray(`» ai (${c.reason})`));
     turnInProgress = true;
     turnAbort = new AbortController();
-    const signal = turnAbort.signal;
+    try {
+      await runTurn({ cfg, provider, ctx, history, session, abortSignal: turnAbort.signal, skills, mcp, sessionContext }, c.payload);
+    } catch (e) {
+      if (e instanceof CancelError || (e as Error).name === "CancelError") {
+        console.log(warnLine("turn interrupted — your next message will resume from here"));
+      } else {
+        console.log(errorLine((e as Error).message));
+      }
+    } finally {
+      turnInProgress = false;
+      turnAbort = null;
+    }
+  }
 
-    void runTurn({ cfg, provider, ctx, rl, history, session, abortSignal: signal, skills, mcp, sessionContext }, c.payload)
-      .catch((e: unknown) => {
-        if (e instanceof CancelError || (e as Error).name === "CancelError") {
-          console.log(warnLine("turn interrupted — your next message will resume from here"));
-        } else {
-          console.log(errorLine((e as Error).message));
-        }
-      })
-      .finally(() => {
-        turnInProgress = false;
-        turnAbort = null;
-        showPrompt();
-      });
-  });
-
-  await new Promise<void>((resolve) => {
-    rl.once("close", () => {
-      rlClosed = true;
-      if (turnAbort) turnAbort.abort();
-      detachEsc();
-      resolve();
-    });
-    showPrompt();
-  });
-
+  detachEsc();
   await shutdown();
 }
+
+const SLASH_COMMANDS = [
+  "help", "exit", "quit", "clear", "cwd", "cd",
+  "provider", "model", "models", "providers",
+  "status", "history", "tools", "blocks", "block",
+  "todos", "context", "skills",
+  "mcp", "save", "config",
+];
 
 /** Hide the routing hint when the classification is obvious; only surface it
  *  when the call could reasonably have gone the other way. */

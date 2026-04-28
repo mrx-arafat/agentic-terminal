@@ -1,10 +1,9 @@
-import type readline from "node:readline";
 import chalk from "chalk";
 import type { Config } from "./config.js";
 import type { Provider } from "./providers/types.js";
 import type { Message, ToolCall } from "./providers/types.js";
 import { TOOL_DEFS, TOOL_HANDLERS, findTool, type ToolContext } from "./tools.js";
-import { errorLine, renderMarkdown, toolLine, toolResult, warnLine, suggestForError, infoLine } from "./ui.js";
+import { errorLine, renderMarkdown, warnLine, suggestForError, infoLine } from "./ui.js";
 import { type SessionState, recordTurn } from "./session.js";
 import { classify } from "./sensitivity.js";
 import { requestApproval, CancelError } from "./approval.js";
@@ -13,14 +12,13 @@ import { rankSkills } from "./skills/trigger.js";
 import { buildSkillSystemPrompt } from "./skills/executor.js";
 import type { MCPManager } from "./mcp/manager.js";
 import { previewFileChange } from "./preview.js";
-import chalkLib from "chalk";
+import { startToolCard } from "./tool-card.js";
 import type { SessionContext } from "./context.js";
 
 export interface AgentDeps {
   cfg: Config;
   provider: Provider;
   ctx: ToolContext;
-  rl: readline.Interface;
   history: Message[];
   session: SessionState;
   abortSignal: AbortSignal;
@@ -135,7 +133,7 @@ export function buildSystemPrompt(ctx: ToolContext, sc?: SessionContext): string
 }
 
 export async function runTurn(deps: AgentDeps, userInput: string): Promise<void> {
-  const { cfg, provider, ctx, rl, history, session, abortSignal, skills, mcp, sessionContext } = deps;
+  const { cfg, provider, ctx, history, session, abortSignal, skills, mcp, sessionContext } = deps;
 
   history.push({ role: "user", content: userInput });
   const toolCallsForTurn: { name: string; argsPreview: string }[] = [];
@@ -238,17 +236,34 @@ export async function runTurn(deps: AgentDeps, userInput: string): Promise<void>
     let interrupted = false;
     try {
       if (parallelIdxs.length > 0) {
+        // Parallel cards' spinners would fight for the cursor (each redraws via
+        // \r\x1b[2K). Print one static summary, run them, then render each
+        // finished card sequentially with no animation.
+        if (parallelIdxs.length > 1) {
+          console.log(infoLine(`◐  Running ${parallelIdxs.length} tools…`));
+        }
+        const skipCard = parallelIdxs.length > 1;
         await Promise.all(parallelIdxs.map(async (k) => {
           if (abortSignal.aborted) { results[k] = "cancelled by user"; return; }
           session.toolCallCount++;
           try {
-            results[k] = await executeTool(response.toolCalls[k], ctx, rl, cfg, session, mcp);
+            results[k] = await executeTool(response.toolCalls[k], ctx, cfg, session, mcp, skipCard);
           } catch (e) {
             results[k] = (e as Error).name === "CancelError"
               ? "cancelled by user"
               : `error: ${(e as Error).message}`;
           }
         }));
+        // Render each parallel card sequentially after all work completes.
+        if (skipCard) {
+          for (const k of parallelIdxs) {
+            const call = response.toolCalls[k];
+            const result = results[k] ?? "cancelled by user";
+            const isError = result === "cancelled by user" || result.startsWith("error:") || result.startsWith("rejected by user");
+            const card = startToolCard(call.name, call.args);
+            card.finish(isError ? "failed" : "done", result);
+          }
+        }
       }
       for (const k of serialIdxs) {
         if (abortSignal.aborted) {
@@ -258,7 +273,7 @@ export async function runTurn(deps: AgentDeps, userInput: string): Promise<void>
         }
         session.toolCallCount++;
         try {
-          results[k] = await executeTool(response.toolCalls[k], ctx, rl, cfg, session, mcp);
+          results[k] = await executeTool(response.toolCalls[k], ctx, cfg, session, mcp, false);
         } catch (e) {
           if ((e as Error).name === "CancelError") {
             results[k] = "cancelled by user";
@@ -317,10 +332,10 @@ function canRunInParallel(
 async function executeTool(
   call: ToolCall,
   ctx: ToolContext,
-  rl: readline.Interface,
   cfg: Config,
   session: SessionState,
   mcp?: MCPManager,
+  skipCard: boolean = false,
 ): Promise<string> {
   const isMCP = mcp?.owns(call.name) ?? false;
   const def = isMCP ? undefined : findTool(call.name);
@@ -328,41 +343,33 @@ async function executeTool(
 
   if (!isMCP && (!def || !handler)) {
     const msg = `unknown tool: ${call.name}`;
-    console.log(errorLine(msg));
+    if (!skipCard) {
+      const card = startToolCard(call.name, call.args);
+      card.finish("failed", msg);
+    }
     return msg;
   }
 
   const { level, reason } = classify({ tool: call.name, args: call.args });
 
-  const preview = await previewFileChange(call.name, call.args, ctx.cwd).catch(() => null);
-  const headerExtra = preview ? chalkLib.gray(`  ${preview.stat}  ${preview.path}`) : "";
+  // Approval prompt may need a diff preview; the card body itself no longer
+  // needs the preview because tool formatters express the change inline.
+  const needsApproval = !(
+    level === "safe" ||
+    session.alwaysAllow.has(call.name) ||
+    (cfg.autoApprove && level !== "destructive") ||
+    session.yesUnsafe
+  );
 
-  if (level === "safe" || session.alwaysAllow.has(call.name)) {
-    console.log(toolLine(call.name, call.args) + headerExtra);
-    if (preview) console.log(preview.diff);
-  } else if (cfg.autoApprove && level !== "destructive") {
-    console.log(toolLine(call.name, call.args) + headerExtra);
-    if (preview) console.log(preview.diff);
-  } else if (session.yesUnsafe) {
-    console.log(toolLine(call.name, call.args) + headerExtra);
-    if (preview) console.log(preview.diff);
-  } else {
-    let res;
-    try {
-      res = await requestApproval({
-        toolName: call.name,
-        argsPreview: JSON.stringify(call.args).slice(0, 50),
-        level,
-        reason,
-        rl,
-        diff: preview?.diff,
-      });
-    } catch (e) {
-      if (e instanceof CancelError || (e as Error).name === "CancelError") {
-        throw e;
-      }
-      throw e;
-    }
+  if (needsApproval) {
+    const preview = await previewFileChange(call.name, call.args, ctx.cwd).catch(() => null);
+    const res = await requestApproval({
+      toolName: call.name,
+      argsPreview: JSON.stringify(call.args).slice(0, 50),
+      level,
+      reason,
+      diff: preview?.diff,
+    });
     if (res.action === "reject") {
       return "rejected by user";
     } else if (res.action === "suggest") {
@@ -372,16 +379,21 @@ async function executeTool(
     }
   }
 
+  const card = skipCard ? null : startToolCard(call.name, call.args);
   try {
     const result = isMCP
       ? await mcp!.callTool(call.name, call.args)
       : await handler!(call.args, ctx);
     const isError = result.startsWith("error:");
-    console.log(toolResult(call.name, result, !isError));
+    card?.finish(isError ? "failed" : "done", result);
     return result;
   } catch (e) {
+    if (e instanceof CancelError || (e as Error).name === "CancelError") {
+      card?.finish("failed", "cancelled by user");
+      throw e;
+    }
     const msg = `error: ${(e as Error).message}`;
-    console.log(errorLine(msg));
+    card?.finish("failed", msg);
     return msg;
   }
 }

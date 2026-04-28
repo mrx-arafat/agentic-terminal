@@ -75,7 +75,10 @@ export function wireEscInterrupt(stdin: NodeJS.ReadableStream, state: EscInterru
     if (!buf) return;
     if (DEBUG) process.stderr.write(`[dbg] data len=${buf.length} hex=${hex(buf)} active=${state.isActive()}\n`);
     if (!state.isActive()) return;
-    if (isBareEscape(buf)) state.onInterrupt();
+    if (isBareEscape(buf)) { state.onInterrupt(); return; }
+    // Ctrl+C in raw mode arrives as byte 0x03 (no SIGINT). Treat as interrupt
+    // when a turn is in flight.
+    if (buf.length === 1 && buf[0] === 0x03) state.onInterrupt();
   };
 
   emitter.on("keypress", keypressHandler);

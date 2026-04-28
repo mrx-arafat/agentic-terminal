@@ -28,6 +28,7 @@ Bring your own API key (Gemini, Claude, OpenAI) or run fully local with Ollama. 
 
 - [Install](#install)
 - [Quick Start](#quick-start)
+- [What's New in v0.6.0](#whats-new-in-v060)
 - [What's New in v0.5.1](#whats-new-in-v051)
 - [What's New in v0.5.0](#whats-new-in-v050)
 - [Dual-mode Input: Shell + AI](#dual-mode-input-shell--ai)
@@ -87,6 +88,40 @@ atx "debug the crash in production.log"
 ```
 
 That's it. The agent will read your files, propose changes, and ask for your approval before anything dangerous runs.
+
+---
+
+## What's New in v0.6.0
+
+### Polished tool-call cards
+Tool output got a redesign. Each call now renders as a single-line card with status glyph, name, smart per-tool summary, stat chips, and right-aligned duration. The header replaces the previous double-print of `⚒ name` + `✓ name` and the raw-JSON args dump.
+
+```text
+●  read_file  src/ui.ts                            180 lines  done · 0.1s
+●  edit_file  src/ui.ts                              +42 -7   done · 0.4s
+▏  @@ -127,4 +127,8 @@
+▏  - export function toolLine(name, args) {
+▏  + export function renderToolCard(call) {
+▏  … 38 more lines
+●  bash  npm test -- --silent                        exit 0   done · 4.7s
+▏  Tests: 253 passed, 0 failed
+✕  bash  npm run build                              exit 1   failed · 2.3s
+▏  src/ui.ts(146,12): TS2304: Cannot find name 'renderCard'.
+```
+
+While a tool runs, the header line redraws in place with a `◐` spinner and live elapsed time, then morphs into `●` (done) or `✕` (failed) when finished. Per-tool formatters give human summaries: `todo_write` shows `N tasks · X done · Y active`, `read_file` shows the path + line count, `edit_file` shows `+N -M` diff stats, `bash` shows the command + exit code, `grep` shows pattern + match count. MCP tools render with their most identifying arg.
+
+Parallel tool batches print `◐ Running N tools…` and then render each card as the batch resolves.
+
+### Shift+Enter for newline
+You can now press `shift+enter` at the prompt to insert a newline (in addition to the existing `alt+enter` and trailing `\`). The CLI auto-enables the kitty keyboard protocol on startup and parses both `CSI 27;2;13~` (xterm modifyOtherKeys) and `CSI 13;2u` (kitty CSI u) — modern terminals (Warp, Ghostty, WezTerm, kitty, foot, recent iTerm2/Alacritty) just work. Older terminals ignore the request and fall back to `alt+enter` cleanly.
+
+The protocol is popped on exit (and on abnormal exit via `process.on("exit")`) so your terminal never stays in a modified state.
+
+### Internal cleanup
+- New `src/tool-card.ts` (renderer + spinner lifecycle) and `src/tool-formatters.ts` (per-tool presentation)
+- Old `toolLine`, `toolResult`, `previewArgs` removed from `src/ui.ts`
+- Test suite grew to 253 tests (added 76 for the new modules)
 
 ---
 
@@ -173,6 +208,8 @@ When the call could have gone either way, a dim hint shows why: `» shell (\`!\`
 
 | Key | Action |
 |-----|--------|
+| `Enter` | Submit |
+| `Shift+Enter` / `Alt+Enter` / trailing `\` | Insert a newline |
 | `Tab` | Completion — directories for `cd`/`pushd`, files/commands elsewhere |
 | `↑` / `↓` | Walk prompt history (readline default) |
 | `Ctrl+A` / `Ctrl+E` | Start / end of line |
@@ -181,6 +218,8 @@ When the call could have gone either way, a dim hint shows why: `» shell (\`!\`
 | `Ctrl+L` | Clear screen |
 | `Ctrl+C` | Cancel current input line — type `/exit` to quit |
 | `Ctrl+D` | EOF — quit the session |
+
+`Shift+Enter` works in modern terminals (Warp, Ghostty, WezTerm, kitty, foot, recent iTerm2/Alacritty) without any config — the CLI auto-enables the kitty keyboard protocol on startup. Older terminals ignore the request; use `Alt+Enter` instead.
 
 ### While a turn is running (AI is thinking or tools are executing)
 
@@ -825,6 +864,8 @@ Forcing `setRawMode(true)` while a turn is active ensures bare Esc isn't line-bu
 | `src/mcp/` | MCP server config loader and JSON-RPC client |
 | `src/memory/` | Per-project memory store + stack detection |
 | `src/ui.ts` | Markdown rendering, syntax highlighting, boxed panels |
+| `src/tool-card.ts` | Tool-call card renderer + spinner lifecycle |
+| `src/tool-formatters.ts` | Per-tool presentation (summary, body, chips) |
 
 ---
 
@@ -994,7 +1035,7 @@ npm test                        # run all tests once
 npm run test:watch              # watch mode for development
 ```
 
-All 154 tests should pass. If they don't, open an issue.
+All 253 tests should pass. If they don't, open an issue.
 
 ---
 
@@ -1017,6 +1058,8 @@ All 154 tests should pass. If they don't, open an issue.
 - [x] Styled AI output with syntax-highlighted code fences and a boxed panel
 - [x] Git branch in prompt, tab-completion, `did you mean` on cd typos
 - [x] Built-in `scaffold-web-app` skill for end-to-end project creation
+- [x] Polished tool-call cards with status pills, smart per-tool summaries, in-place spinner (v0.6.0)
+- [x] Shift+Enter newline via kitty keyboard protocol auto-enable (v0.6.0)
 - [ ] Streaming responses with live token rendering
 - [ ] MCP server spawning and live tool injection
 - [ ] More tools: `web_fetch`, `apply_patch`, `run_tests`
