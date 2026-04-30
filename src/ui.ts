@@ -44,11 +44,11 @@ marked.use(
   }) as never,
 );
 
-function styleCodeBlock(code: string, lang: string | undefined): string {
+export function styleCodeBlock(code: string, lang: string | undefined): string {
   const langLabel = lang ? chalk.gray(" " + lang) : "";
-  const highlighted = highlightCode(code, lang);
-  const lines = highlighted.split("\n").map((l) => chalk.gray("│ ") + l).join("\n");
-  return `${chalk.gray("┌─") + langLabel}\n${lines}\n${chalk.gray("└─")}`;
+  const trimmed = code.replace(/\s*\n\s*$/g, "").replace(/[ \t]+$/g, "");
+  const highlighted = highlightCode(trimmed, lang);
+  return `${chalk.gray("┌─") + langLabel}\n${highlighted}\n${chalk.gray("└─")}`;
 }
 
 /** Render a block of AI-generated markdown to a styled terminal string. */
@@ -71,16 +71,32 @@ export function renderMarkdown(text: string): string {
     body = text;
   }
 
-  body = body.replace(/§§CODE_BLOCK_(\d+)§§/g, (_, i) => {
-    const b = blocks[Number(i)];
-    return b ? styleCodeBlock(b.code, b.lang) : "";
-  });
-
-  // Wrap in a subtle left-gutter "panel" so AI replies are visually distinct
-  // from shell output and tool calls.
+  // Splice code blocks in WITHOUT the agent gutter so triple-click selection
+  // captures only command text — gutters break paste-into-terminal.
   const gutter = chalk.gray("│ ");
-  const lines = body.split("\n").map((l) => gutter + l).join("\n");
-  return `${chalk.gray("╭─ agent")}\n${lines}\n${chalk.gray("╰─")}`;
+  const ansiRe = /\x1b\[[0-9;]*m/g;
+  const isVisuallyBlank = (s: string): boolean => s.replace(ansiRe, "").length === 0;
+  const segments = body.split(/(§§CODE_BLOCK_\d+§§)/);
+  const rendered: string[] = [];
+  for (const seg of segments) {
+    const m = seg.match(/^§§CODE_BLOCK_(\d+)§§$/);
+    if (m) {
+      const b = blocks[Number(m[1])];
+      if (b) rendered.push(styleCodeBlock(b.code, b.lang));
+      continue;
+    }
+    if (isVisuallyBlank(seg)) continue;
+    const guttered = seg
+      .split("\n")
+      .map((l) => (isVisuallyBlank(l) ? "" : gutter + l))
+      .join("\n");
+    rendered.push(guttered);
+  }
+
+  let joined = rendered.join("\n").replace(/\n{3,}/g, "\n\n");
+  joined = joined.replace(/^\n+/, "").replace(/\n+$/, "");
+
+  return `${chalk.gray("╭─ agent")}\n${joined}\n${chalk.gray("╰─")}`;
 }
 
 export function banner(providerName: string, model: string, cwd: string): string {

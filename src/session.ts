@@ -6,6 +6,12 @@ export interface TurnRecord {
   toolCalls: { name: string; argsPreview: string }[];
 }
 
+export interface CommandSuggestion {
+  id: number;
+  lang: string;
+  code: string;
+}
+
 export interface SessionState {
   startedAt: Date;
   provider: string;
@@ -18,6 +24,7 @@ export interface SessionState {
   turns: TurnRecord[];
   cancelled: boolean;
   yesUnsafe: boolean;
+  suggestions: CommandSuggestion[];
 }
 
 export function createSession(cfg: Config, provider: string, cwd: string, yesUnsafe: boolean): SessionState {
@@ -33,6 +40,7 @@ export function createSession(cfg: Config, provider: string, cwd: string, yesUns
     turns: [],
     cancelled: false,
     yesUnsafe,
+    suggestions: [],
   };
 }
 

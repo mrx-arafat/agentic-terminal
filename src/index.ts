@@ -35,6 +35,7 @@ import { MCPManager } from "./mcp/manager.js";
 import { buildSessionContext, type SessionContext } from "./context.js";
 import type { BgProcess, BlockRecord, TodoItem } from "./blocks.js";
 import { wireEscInterrupt } from "./interrupt.js";
+import { handleRun, handleInsert, handleCopy } from "./suggestions.js";
 
 const VERSION = "0.5.1";
 
@@ -232,6 +233,7 @@ async function main(): Promise<void> {
   let turnInProgress = false;
   let turnAbort: AbortController | null = null;
   let resumeText = "";
+  let pendingInitial = "";
   let lastInterruptAt = 0;
 
   const detachEsc = wireEscInterrupt(process.stdin, {
@@ -247,12 +249,13 @@ async function main(): Promise<void> {
   while (true) {
     const branch = gitBranch(ctx.cwd);
     const headerInfo = `${provider.name} · ${resolveModel(cfg)}`;
+    const initial = pendingInitial !== "" ? pendingInitial : resumeText;
     const result = await readInput({
       cwd: ctx.cwd,
       branch,
       header: headerInfo,
       history: histList,
-      initial: resumeText,
+      initial,
       hintLines: [
         chalk.gray("enter") + " submit  " + chalk.gray("shift/alt+enter") + " newline  " + chalk.gray("tab") + " complete  " + chalk.gray("↑↓") + " history  " + chalk.gray("ctrl+d") + " exit",
       ],
@@ -260,6 +263,7 @@ async function main(): Promise<void> {
       onSubmit: (text) => appendHistory(histList, text),
     });
     resumeText = "";
+    pendingInitial = "";
 
     if (result.kind === "eof") break;
     if (result.kind === "interrupt") {
@@ -275,7 +279,17 @@ async function main(): Promise<void> {
     const c = classifyInput(input);
 
     if (c.kind === "slash") {
-      const done = await handleSlash(c.payload, { cfg, ctx, history, session, skills, mcp, sessionContext });
+      const done = await handleSlash(c.payload, {
+        cfg,
+        ctx,
+        history,
+        session,
+        skills,
+        mcp,
+        sessionContext,
+        runShell: (command) => runShell(command, ctx),
+        setPendingInitial: (text) => { pendingInitial = text; },
+      });
       if (done === "exit") break;
       continue;
     }
@@ -317,6 +331,7 @@ const SLASH_COMMANDS = [
   "status", "history", "tools", "blocks", "block",
   "todos", "context", "skills",
   "mcp", "save", "config",
+  "run", "insert", "copy",
 ];
 
 /** Hide the routing hint when the classification is obvious; only surface it
@@ -412,6 +427,8 @@ interface SlashCtx {
   skills: Skill[];
   mcp: MCPManager;
   sessionContext: SessionContext;
+  runShell: (command: string) => Promise<void>;
+  setPendingInitial: (text: string) => void;
 }
 
 async function handleSlash(input: string, s: SlashCtx): Promise<"exit" | void> {
@@ -471,6 +488,11 @@ ${chalk.bold("Slash commands:")}
   /config                     print config path and settings
   /save                       persist current provider/model/approve to config file
   /exit                       quit
+
+${chalk.bold("Suggestions (from last AI reply):")}
+  /run [n]                    run command suggestion #n (default 1) from last reply
+  /insert [n]                 paste suggestion #n into the next prompt for editing
+  /copy [n]                   copy suggestion #n to system clipboard (OSC 52)
 `);
       return;
     case "clear":
@@ -642,6 +664,23 @@ ${chalk.bold("Slash commands:")}
     case "config":
       console.log(infoLine(`path: ${configPath()}`));
       console.log(JSON.stringify({ ...s.cfg, geminiApiKey: mask(s.cfg.geminiApiKey), claudeApiKey: mask(s.cfg.claudeApiKey), openaiApiKey: mask(s.cfg.openaiApiKey) }, null, 2));
+      return;
+    case "run":
+      await handleRun(s.session, rest[0], {
+        runShell: s.runShell,
+        log: (line) => console.log(line),
+      });
+      return;
+    case "insert":
+      handleInsert(s.session, rest[0], {
+        setPendingInitial: s.setPendingInitial,
+        log: (line) => console.log(line),
+      });
+      return;
+    case "copy":
+      handleCopy(s.session, rest[0], {
+        log: (line) => console.log(line),
+      });
       return;
     default:
       console.log(warnLine(`unknown command: /${cmd}  (try /help)`));

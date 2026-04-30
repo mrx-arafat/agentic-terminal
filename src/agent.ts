@@ -4,7 +4,7 @@ import type { Provider } from "./providers/types.js";
 import type { Message, ToolCall } from "./providers/types.js";
 import { TOOL_DEFS, TOOL_HANDLERS, findTool, type ToolContext } from "./tools.js";
 import { errorLine, renderMarkdown, warnLine, suggestForError, infoLine } from "./ui.js";
-import { type SessionState, recordTurn } from "./session.js";
+import { type SessionState, recordTurn, type CommandSuggestion } from "./session.js";
 import { classify } from "./sensitivity.js";
 import { requestApproval, CancelError } from "./approval.js";
 import type { Skill } from "./skills/types.js";
@@ -25,6 +25,61 @@ export interface AgentDeps {
   skills?: Skill[];
   mcp?: MCPManager;
   sessionContext?: SessionContext;
+}
+
+const RUNNABLE_LANGS = new Set(["bash", "shell", "sh", "zsh", "console"]);
+const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
+const FENCE_RE = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g;
+const MAX_SUGGESTIONS = 10;
+
+/** Heuristic: does an untagged fenced block look like shell commands? */
+function looksLikeShell(code: string): boolean {
+  const lines = code.split("\n").map((l) => l.trim()).filter((l) => l.length > 0 && !l.startsWith("#"));
+  if (lines.length === 0) return false;
+  for (const line of lines) {
+    // Reject lines with obvious non-shell syntax markers.
+    if (/[<>]/.test(line) && /<\/?[a-zA-Z][^>]*>/.test(line)) return false; // HTML/XML tag
+    if (/;\s*$/.test(line)) return false;                                    // JS/TS statement
+    if (/^(const|let|var|function|class|import|export|interface|type)\b/.test(line)) return false;
+    if (/^def\s+\w+\s*\(.*\)\s*:/.test(line)) return false;                  // Python def
+    if (/^class\s+\w+.*:/.test(line)) return false;                          // Python class
+    if (/=>\s*[{(]/.test(line)) return false;                                // arrow function
+    if (/^\s*(if|for|while|elif|else)\b.*:\s*$/.test(line)) return false;    // python control flow
+  }
+  return true;
+}
+
+/** Extract fenced code blocks the user might want to run/insert/copy. */
+export function extractRunnableBlocks(text: string): CommandSuggestion[] {
+  if (!text) return [];
+  const stripped = text.replace(ANSI_ESCAPE_RE, "");
+  const out: CommandSuggestion[] = [];
+  let nextId = 1;
+  FENCE_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = FENCE_RE.exec(stripped)) !== null) {
+    if (out.length >= MAX_SUGGESTIONS) break;
+    const rawTag = (match[1] ?? "").toLowerCase();
+    const code = (match[2] ?? "").trimEnd();
+    if (code.length === 0 || code.trim().length === 0) continue;
+    let lang: string;
+    if (rawTag === "") {
+      if (!looksLikeShell(code)) continue;
+      lang = "";
+    } else if (RUNNABLE_LANGS.has(rawTag)) {
+      lang = "bash";
+    } else {
+      continue;
+    }
+    out.push({ id: nextId++, lang, code });
+  }
+  return out;
+}
+
+function printSuggestionHint(suggestions: CommandSuggestion[]): void {
+  if (suggestions.length === 0) return;
+  const idList = suggestions.length === 1 ? "1" : `1-${suggestions.length}`;
+  console.log(chalk.dim(`↳  /run ${idList} · /insert ${idList} · /copy ${idList}`));
 }
 
 /** If the previous turn had cancelled tool results, surface a resume hint
@@ -111,6 +166,7 @@ export function buildSystemPrompt(ctx: ToolContext, sc?: SessionContext): string
     "  * Node/tool versions: use whatever is on PATH; don't install global toolchains unless asked.",
     "- Only ask questions when a choice is genuinely ambiguous AND has a high blast radius (e.g. overwriting existing work, deleting data, picking between wildly different architectures).",
     "- For any non-trivial request, start by calling `todo_write` with a concrete step-by-step plan, then execute the plan, updating statuses as you go.",
+    "- When the user can immediately benefit from running a command you'd otherwise just describe (verifying a built site, starting a dev server, smoke-testing an endpoint), use the `bash` tool yourself. Do NOT write \"open your terminal and run X\" — execute it. For long-running servers use `bash background=true` then report the URL/port.",
     "- After executing, end the turn with a concise summary: what was created, where it lives, and how to run it.",
     "",
     "## Tool usage rules",
@@ -136,6 +192,7 @@ export async function runTurn(deps: AgentDeps, userInput: string): Promise<void>
   const { cfg, provider, ctx, history, session, abortSignal, skills, mcp, sessionContext } = deps;
 
   history.push({ role: "user", content: userInput });
+  session.suggestions = [];
   const toolCallsForTurn: { name: string; argsPreview: string }[] = [];
 
   const matched = skills && skills.length > 0 ? rankSkills(userInput, skills)[0] : undefined;
@@ -203,6 +260,11 @@ export async function runTurn(deps: AgentDeps, userInput: string): Promise<void>
 
     if (response.text) {
       console.log(renderMarkdown(response.text));
+    }
+
+    session.suggestions = response.text ? extractRunnableBlocks(response.text) : [];
+    if (session.suggestions.length > 0) {
+      printSuggestionHint(session.suggestions);
     }
 
     history.push({
