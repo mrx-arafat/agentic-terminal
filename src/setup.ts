@@ -19,6 +19,7 @@ const PROVIDER_NAMES: Array<{ key: ProviderName; label: string; needsKey: boolea
   { key: "claude", label: "Anthropic Claude", needsKey: true },
   { key: "openai", label: "OpenAI", needsKey: true },
   { key: "ollama", label: "Ollama (local, self-hosted)", needsKey: false },
+  { key: "claude-cli", label: "Claude Code CLI (uses your Claude subscription)", needsKey: false },
 ];
 
 const PROVIDER_BLURB: Record<ProviderName, string> = {
@@ -26,6 +27,7 @@ const PROVIDER_BLURB: Record<ProviderName, string> = {
   claude: "Most capable and thoughtful. Best for complex reasoning and code review.",
   openai: "Reliable and widely compatible. Good for general tasks and integrations.",
   ollama: "Run locally on your machine. No API keys needed, completely private.",
+  "claude-cli": "Uses your installed Claude Code CLI. Auths via Claude subscription. Tools via prompt engineering.",
 };
 
 function validateApiKey(provider: ProviderName, key: string): { ok: boolean; reason?: string } {
@@ -93,9 +95,13 @@ export async function runSetup(): Promise<void> {
       if (testConn.trim().toLowerCase().startsWith("y")) {
         await testConnection(cfg);
       }
-    } else {
+    } else if (chosen.key === "ollama") {
       const host = await question(rl, `\nOllama host (default ${cfg.ollamaHost}): `);
       if (host.trim()) cfg.ollamaHost = host.trim();
+    } else if (chosen.key === "claude-cli") {
+      console.log(infoLine(`\n${PROVIDER_BLURB[chosen.key]}`));
+      const bin = await question(rl, `Claude CLI binary path (default ${cfg.claudeCliBinary ?? "claude"}): `);
+      if (bin.trim()) cfg.claudeCliBinary = bin.trim();
     }
 
     await pickModel(rl, cfg);

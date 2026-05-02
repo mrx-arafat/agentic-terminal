@@ -1,7 +1,7 @@
 {
   "name": "agentic-terminal",
-  "version": "0.6.0",
-  "description": "Open-source folder-scoped AI terminal agent with skills, MCP integration, and project memory. Gemini, Claude, OpenAI, or Ollama.",
+  "version": "0.7.0",
+  "description": "Open-source folder-scoped AI terminal agent with skills, MCP integration, and project memory. Gemini, Claude, OpenAI, Ollama, or Claude Code CLI (subscription auth).",
   "type": "module",
   "bin": {
     "agentic": "bin/agentic.js",
@@ -36,6 +36,8 @@
     "cli",
     "gemini",
     "claude",
+    "claude-cli",
+    "claude-code",
     "anthropic",
     "openai",
     "ollama",

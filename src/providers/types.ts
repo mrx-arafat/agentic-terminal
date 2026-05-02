@@ -24,7 +24,7 @@ export interface ChatOptions {
 }
 
 export interface Provider {
-  name: "gemini" | "claude" | "openai" | "ollama";
+  name: "gemini" | "claude" | "openai" | "ollama" | "claude-cli";
   model: string;
   chat(messages: Message[], tools: ToolDef[], opts?: ChatOptions): Promise<ProviderResponse>;
 }

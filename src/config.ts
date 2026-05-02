@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-export type ProviderName = "gemini" | "claude" | "openai" | "ollama";
+export type ProviderName = "gemini" | "claude" | "openai" | "ollama" | "claude-cli";
 
 export interface Config {
   provider: ProviderName;
@@ -11,10 +11,12 @@ export interface Config {
   openaiApiKey?: string;
   openaiBaseUrl?: string;
   ollamaHost?: string;
+  claudeCliBinary?: string;
   geminiModel: string;
   claudeModel: string;
   openaiModel: string;
   ollamaModel: string;
+  claudeCliModel: string;
   autoApprove: boolean;
   maxIterations: number;
 }
@@ -28,7 +30,9 @@ const DEFAULTS: Config = {
   claudeModel: "claude-sonnet-4-5",
   openaiModel: "gpt-4.1-mini",
   ollamaModel: "qwen2.5:7b",
+  claudeCliModel: "sonnet",
   ollamaHost: "http://localhost:11434",
+  claudeCliBinary: "claude",
   autoApprove: false,
   maxIterations: 25,
 };
@@ -62,6 +66,8 @@ export function resolveApiKey(cfg: Config): string | undefined {
       return cfg.openaiApiKey || process.env.OPENAI_API_KEY;
     case "ollama":
       return "not-required";
+    case "claude-cli":
+      return "not-required";
   }
 }
 
@@ -71,6 +77,7 @@ export function resolveModel(cfg: Config): string {
     case "claude": return cfg.claudeModel;
     case "openai": return cfg.openaiModel;
     case "ollama": return cfg.ollamaModel;
+    case "claude-cli": return cfg.claudeCliModel;
   }
 }
 
@@ -80,5 +87,6 @@ export function setModel(cfg: Config, model: string): void {
     case "claude": cfg.claudeModel = model; break;
     case "openai": cfg.openaiModel = model; break;
     case "ollama": cfg.ollamaModel = model; break;
+    case "claude-cli": cfg.claudeCliModel = model; break;
   }
 }

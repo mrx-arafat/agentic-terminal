@@ -35,6 +35,14 @@ export const MODEL_CATALOG: Record<ProviderName, ModelInfo[]> = {
     { id: "o4-mini", label: "o4-mini", tier: "reasoning", notes: "Reasoning, cheap" },
     { id: "o3", label: "o3", tier: "reasoning", notes: "Reasoning, strong" },
   ],
+  "claude-cli": [
+    { id: "haiku", label: "Haiku (alias)", tier: "small", notes: "Fast + cheap" },
+    { id: "sonnet", label: "Sonnet (alias)", tier: "medium", notes: "Default" },
+    { id: "opus", label: "Opus (alias)", tier: "flagship", notes: "Strongest" },
+    { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", tier: "small" },
+    { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", tier: "medium" },
+    { id: "claude-opus-4-7", label: "Claude Opus 4.7", tier: "flagship" },
+  ],
   ollama: [
     { id: "llama3.2:1b", label: "Llama 3.2 1B", tier: "small", notes: "Tiny" },
     { id: "llama3.2:3b", label: "Llama 3.2 3B", tier: "small" },

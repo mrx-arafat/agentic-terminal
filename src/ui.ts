@@ -51,7 +51,8 @@ export function styleCodeBlock(code: string, lang: string | undefined): string {
   return `${chalk.gray("┌─") + langLabel}\n${highlighted}\n${chalk.gray("└─")}`;
 }
 
-/** Render a block of AI-generated markdown to a styled terminal string. */
+/** Render a block of AI-generated markdown to a styled terminal string.
+ *  Style: `● <first line>` then indented continuation, mirroring Claude Code. */
 export function renderMarkdown(text: string): string {
   if (!text.trim()) return "";
 
@@ -71,39 +72,101 @@ export function renderMarkdown(text: string): string {
     body = text;
   }
 
-  // Splice code blocks in WITHOUT the agent gutter so triple-click selection
-  // captures only command text — gutters break paste-into-terminal.
-  const gutter = chalk.gray("│ ");
   const ansiRe = /\x1b\[[0-9;]*m/g;
   const isVisuallyBlank = (s: string): boolean => s.replace(ansiRe, "").length === 0;
   const segments = body.split(/(§§CODE_BLOCK_\d+§§)/);
-  const rendered: string[] = [];
+
+  const bullet = chalk.green("●");
+  const indent = "  ";
+  let firstWritten = false;
+  const out: string[] = [];
+
+  const pushText = (seg: string): void => {
+    const lines = seg.split("\n");
+    for (const ln of lines) {
+      if (isVisuallyBlank(ln)) {
+        out.push("");
+        continue;
+      }
+      if (!firstWritten) {
+        out.push(`${bullet} ${ln}`);
+        firstWritten = true;
+      } else {
+        out.push(`${indent}${ln}`);
+      }
+    }
+  };
+
   for (const seg of segments) {
     const m = seg.match(/^§§CODE_BLOCK_(\d+)§§$/);
     if (m) {
       const b = blocks[Number(m[1])];
-      if (b) rendered.push(styleCodeBlock(b.code, b.lang));
+      if (b) out.push(styleCodeBlock(b.code, b.lang));
       continue;
     }
     if (isVisuallyBlank(seg)) continue;
-    const guttered = seg
-      .split("\n")
-      .map((l) => (isVisuallyBlank(l) ? "" : gutter + l))
-      .join("\n");
-    rendered.push(guttered);
+    pushText(seg);
   }
 
-  let joined = rendered.join("\n").replace(/\n{3,}/g, "\n\n");
-  joined = joined.replace(/^\n+/, "").replace(/\n+$/, "");
-
-  return `${chalk.gray("╭─ agent")}\n${joined}\n${chalk.gray("╰─")}`;
+  let result = out.join("\n").replace(/\n{3,}/g, "\n\n");
+  result = result.replace(/^\n+/, "").replace(/\n+$/, "");
+  return `\n${result}`;
 }
 
-export function banner(providerName: string, model: string, cwd: string): string {
-  const title = chalk.bold.cyan("Agentic Terminal");
-  const sub = chalk.gray(`${providerName}  ·  ${model}`);
-  const where = chalk.gray(cwd);
-  return `\n${title}\n${sub}\n${where}\n${chalk.gray("type /help for commands · Ctrl+C to cancel · Ctrl+D to exit")}\n`;
+const ANSI_RE_BANNER = /\x1b\[[0-9;]*m/g;
+const visibleWidth = (s: string): number => s.replace(ANSI_RE_BANNER, "").length;
+
+export interface BannerInfo {
+  version?: string;
+  branch?: string;
+}
+
+export function banner(providerName: string, model: string, cwd: string, info: BannerInfo = {}): string {
+  const cols = process.stdout.columns ?? 100;
+  const width = Math.max(56, Math.min(82, cols - 2));
+
+  const home = process.env.HOME ?? os.homedir();
+  const folder = cwd.startsWith(home) ? "~" + cwd.slice(home.length) : cwd;
+
+  const title = chalk.bold.cyan("◆ Agentic Terminal");
+  const ver = info.version ? chalk.dim(`v${info.version}`) : "";
+
+  const providerVal = `${chalk.bold.green(providerName)} ${chalk.dim("·")} ${chalk.cyan(model)}`;
+  const folderVal = chalk.white(folder);
+  const branchVal = info.branch ? chalk.yellow("⎇ " + info.branch) : chalk.dim("(no git)");
+
+  const inner = width - 4;
+  const labelW = 9;
+  const fmtRow = (label: string, value: string): string =>
+    chalk.dim(label.padEnd(labelW)) + value;
+
+  const padInner = (left: string, right: string): string => {
+    const used = visibleWidth(left) + visibleWidth(right);
+    const pad = Math.max(1, inner - used);
+    return left + " ".repeat(pad) + right;
+  };
+
+  const side = chalk.gray("│");
+  const top = chalk.gray("╭" + "─".repeat(width - 2) + "╮");
+  const bottom = chalk.gray("╰" + "─".repeat(width - 2) + "╯");
+  const row = (content: string): string => {
+    const pad = Math.max(0, inner - visibleWidth(content));
+    return `${side} ${content}${" ".repeat(pad)} ${side}`;
+  };
+
+  const lines = [
+    "",
+    top,
+    row(padInner(title, ver)),
+    row(chalk.gray("─".repeat(inner))),
+    row(fmtRow("provider", providerVal)),
+    row(fmtRow("folder",   folderVal)),
+    row(fmtRow("branch",   branchVal)),
+    bottom,
+    chalk.dim("  /help · commands    ctrl+c · cancel    ctrl+d · exit"),
+    "",
+  ];
+  return lines.join("\n");
 }
 
 function shortCwd(cwd: string): string {

@@ -79,21 +79,20 @@ describe("renderMarkdown", () => {
     expect(code).toEqual(["cd bangladesh-flag", "npx --yes serve ."]);
   });
 
-  it("gutters prose but not code in mixed content", () => {
+  it("indents prose but not code in mixed content", () => {
     const md = "To start, run:\n\n```bash\nnpm start\n```\n\nThen open the URL.";
     const out = renderMarkdown(md);
     const plain = stripAnsi(out);
-    const lines = plain.split("\n");
+    const lines = plain.split("\n").filter((l) => l.length > 0);
 
-    expect(lines[0]).toBe("╭─ agent");
-    expect(lines[lines.length - 1]).toBe("╰─");
-
-    const proseLines = lines.filter((l) => l.includes("start") && !l.includes("npm") && !l.includes("agent"));
-    for (const l of proseLines) expect(l.startsWith("│ ")).toBe(true);
+    // First non-empty line should start with bullet
+    const firstContent = lines.find((l) => /[A-Za-z]/.test(l)) ?? "";
+    expect(firstContent.startsWith("● ")).toBe(true);
 
     const codeLines = extractCodeLines(out);
     expect(codeLines).toContain("npm start");
     for (const l of codeLines) expect(l.startsWith("│")).toBe(false);
+    for (const l of codeLines) expect(l.startsWith("●")).toBe(false);
   });
 
   it("renders two consecutive code blocks correctly", () => {
@@ -108,40 +107,34 @@ describe("renderMarkdown", () => {
     expect(code).toEqual(["foo", "bar"]);
   });
 
-  it("preserves prose-only behavior (everything guttered)", () => {
+  it("renders prose with bullet prefix", () => {
     const out = renderMarkdown("Hello world");
     const plain = stripAnsi(out);
-    const lines = plain.split("\n");
-    expect(lines[0]).toBe("╭─ agent");
-    expect(lines[lines.length - 1]).toBe("╰─");
-    const middle = lines.slice(1, -1).filter((l) => l.length > 0);
-    for (const l of middle) expect(l.startsWith("│ ")).toBe(true);
+    const lines = plain.split("\n").filter((l) => l.length > 0);
+    expect(lines[0]).toBe("● Hello world");
   });
 
-  it("handles code block at the very start with no leading ghost gutter", () => {
+  it("handles code block at the very start", () => {
     const md = "```bash\necho hi\n```\n\nafter";
     const out = renderMarkdown(md);
     const plain = stripAnsi(out);
-    const lines = plain.split("\n");
-    expect(lines[0]).toBe("╭─ agent");
-    // first content line after panel header should be the code block header
-    expect(lines[1]).toBe("┌─ bash");
+    expect(plain).toContain("┌─ bash");
+    expect(plain).toContain("after");
   });
 
-  it("handles code block at the very end with no trailing ghost gutter", () => {
+  it("handles code block at the very end", () => {
     const md = "before\n\n```bash\necho hi\n```";
     const out = renderMarkdown(md);
     const plain = stripAnsi(out);
-    const lines = plain.split("\n");
-    expect(lines[lines.length - 1]).toBe("╰─");
-    expect(lines[lines.length - 2]).toBe("└─");
+    const lines = plain.split("\n").filter((l) => l.length > 0);
+    expect(lines[lines.length - 1]).toBe("└─");
   });
 
-  it("collapses runs of blank lines from placeholder padding", () => {
+  it("does not produce excessive blank lines", () => {
     const md = "para\n\n```bash\nx\n```\n\nend";
     const out = renderMarkdown(md);
     const plain = stripAnsi(out);
-    expect(plain).not.toMatch(/\n\n\n/);
+    expect(plain).not.toMatch(/\n\n\n\n/);
   });
 
   it("triple-click copyability: extracted code equals original input exactly", () => {
@@ -161,11 +154,11 @@ describe("renderMarkdown", () => {
     }
   });
 
-  it("wraps output in agent panel markers", () => {
+  it("starts agent text with bullet prefix", () => {
     const out = renderMarkdown("hi");
     const plain = stripAnsi(out);
-    expect(plain.startsWith("╭─ agent\n")).toBe(true);
-    expect(plain.endsWith("\n╰─")).toBe(true);
+    const lines = plain.split("\n").filter((l) => l.length > 0);
+    expect(lines[0]).toBe("● hi");
   });
 
   it("strips ANSI cleanly for code with no language", () => {

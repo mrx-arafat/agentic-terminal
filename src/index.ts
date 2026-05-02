@@ -15,7 +15,7 @@ import {
 } from "./config.js";
 import { MODEL_CATALOG } from "./models.js";
 import { createProvider } from "./providers/factory.js";
-import type { Message } from "./providers/types.js";
+import type { Message, Provider } from "./providers/types.js";
 import type { ToolContext } from "./tools.js";
 import { runSetup, printModelList, printProviderList } from "./setup.js";
 import { runTurn } from "./agent.js";
@@ -37,7 +37,7 @@ import type { BgProcess, BlockRecord, TodoItem } from "./blocks.js";
 import { wireEscInterrupt } from "./interrupt.js";
 import { handleRun, handleInsert, handleCopy } from "./suggestions.js";
 
-const VERSION = "0.5.1";
+const VERSION = "0.7.0";
 
 function usage(): void {
   console.log(`
@@ -95,14 +95,20 @@ function parseArgs(argv: string[]): ParsedArgs {
     else if (a === "--cwd") out.cwd = argv[++i];
     else if (a === "--provider") out.providerOverride = argv[++i] as ProviderName;
     else if (a === "--model") out.modelOverride = argv[++i];
+    else if (a === "--setup") out.subcommand = "setup";
+    else if (a === "--providers") out.subcommand = "providers";
+    else if (a === "--models") out.subcommand = "models";
+    else if (a === "--config") out.subcommand = "config";
     else positional.push(a);
   }
   const subcommands = new Set(["setup", "providers", "models", "config"]);
-  if (positional[0] && subcommands.has(positional[0])) {
+  if (!out.subcommand && positional[0] && subcommands.has(positional[0])) {
     out.subcommand = positional[0];
     out.rest = positional.slice(1);
-  } else if (positional.length > 0) {
+  } else if (!out.subcommand && positional.length > 0) {
     out.prompt = positional.join(" ");
+  } else if (out.subcommand && positional.length > 0) {
+    out.rest = positional;
   }
   return out;
 }
@@ -164,7 +170,8 @@ async function main(): Promise<void> {
   const cfg = applyOverrides(baseCfg, args);
 
   const apiKey = resolveApiKey(cfg);
-  if (cfg.provider !== "ollama" && !apiKey) {
+  const noKeyNeeded = cfg.provider === "ollama" || cfg.provider === "claude-cli";
+  if (!noKeyNeeded && !apiKey) {
     console.log(errorLine(`no API key for ${cfg.provider}. run: agentic setup`));
     process.exit(1);
   }
@@ -227,7 +234,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(banner(provider.name, resolveModel(cfg), ctx.cwd));
+  console.log(banner(provider.name, resolveModel(cfg), ctx.cwd, {
+    version: VERSION,
+    branch: gitBranch(ctx.cwd),
+  }));
 
   const histList = loadHistory();
   let turnInProgress = false;
@@ -248,7 +258,7 @@ async function main(): Promise<void> {
 
   while (true) {
     const branch = gitBranch(ctx.cwd);
-    const headerInfo = `${provider.name} · ${resolveModel(cfg)}`;
+    const headerInfo = `${chalk.bold.green(provider.name)} ${chalk.dim("·")} ${chalk.cyan(resolveModel(cfg))}`;
     const initial = pendingInitial !== "" ? pendingInitial : resumeText;
     const result = await readInput({
       cwd: ctx.cwd,
@@ -289,6 +299,7 @@ async function main(): Promise<void> {
         sessionContext,
         runShell: (command) => runShell(command, ctx),
         setPendingInitial: (text) => { pendingInitial = text; },
+        swapProvider: (p) => { provider = p; },
       });
       if (done === "exit") break;
       continue;
@@ -327,7 +338,7 @@ async function main(): Promise<void> {
 
 const SLASH_COMMANDS = [
   "help", "exit", "quit", "clear", "cwd", "cd",
-  "provider", "model", "models", "providers",
+  "provider", "model", "models", "providers", "setup",
   "status", "history", "tools", "blocks", "block",
   "todos", "context", "skills",
   "mcp", "save", "config",
@@ -429,6 +440,7 @@ interface SlashCtx {
   sessionContext: SessionContext;
   runShell: (command: string) => Promise<void>;
   setPendingInitial: (text: string) => void;
+  swapProvider: (p: Provider) => void;
 }
 
 async function handleSlash(input: string, s: SlashCtx): Promise<"exit" | void> {
@@ -517,13 +529,32 @@ ${chalk.bold("Suggestions (from last AI reply):")}
     case "provider": {
       const name = rest[0] as ProviderName;
       if (!name || !(name in MODEL_CATALOG)) {
-        console.log(errorLine(`usage: /provider gemini|claude|openai|ollama`));
+        console.log(errorLine(`usage: /provider gemini|claude|openai|ollama|claude-cli`));
         return;
       }
       s.cfg.provider = name;
       s.session.provider = name;
       s.session.model = resolveModel(s.cfg);
-      console.log(successLine(`provider=${name} model=${resolveModel(s.cfg)} (use /save to persist)`));
+      try {
+        s.swapProvider(createProvider(s.cfg));
+        console.log(successLine(`provider=${name} model=${resolveModel(s.cfg)} (use /save to persist)`));
+      } catch (e) {
+        console.log(errorLine(`switch failed: ${(e as Error).message}`));
+      }
+      return;
+    }
+    case "setup": {
+      await runSetup();
+      const fresh = loadConfig();
+      Object.assign(s.cfg, fresh);
+      s.session.provider = fresh.provider;
+      s.session.model = resolveModel(fresh);
+      try {
+        s.swapProvider(createProvider(fresh));
+        console.log(successLine(`provider=${fresh.provider} model=${resolveModel(fresh)}`));
+      } catch (e) {
+        console.log(errorLine(`provider init failed: ${(e as Error).message}`));
+      }
       return;
     }
     case "model": {
@@ -531,7 +562,12 @@ ${chalk.bold("Suggestions (from last AI reply):")}
       if (!id) { console.log(errorLine("usage: /model <id>")); return; }
       setModel(s.cfg, id);
       s.session.model = id;
-      console.log(successLine(`model=${id} (use /save to persist)`));
+      try {
+        s.swapProvider(createProvider(s.cfg));
+        console.log(successLine(`model=${id} (use /save to persist)`));
+      } catch (e) {
+        console.log(errorLine(`switch failed: ${(e as Error).message}`));
+      }
       return;
     }
     case "models":

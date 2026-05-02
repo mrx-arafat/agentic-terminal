@@ -2,7 +2,7 @@
 
 An open-source, folder-scoped AI terminal agent. `cd` into any project, launch `agentic`, and get a senior engineer in your terminal — one prompt builds the app, installs the deps, runs the tests, and serves it, all with your approval. Type `ls`, `git status`, or any shell command and it runs as a real shell. Type an English sentence and the AI handles it. No mode switch.
 
-Bring your own API key (Gemini, Claude, OpenAI) or run fully local with Ollama. Zero telemetry. MIT licensed.
+Bring your own API key (Gemini, Claude, OpenAI), run fully local with Ollama, or use your **Claude Code CLI** (subscription auth — no API key needed). Zero telemetry. MIT licensed.
 
 ```
 ~/projects $ agentic
@@ -28,6 +28,7 @@ Bring your own API key (Gemini, Claude, OpenAI) or run fully local with Ollama. 
 
 - [Install](#install)
 - [Quick Start](#quick-start)
+- [What's New in v0.7.0](#whats-new-in-v070)
 - [What's New in v0.6.0](#whats-new-in-v060)
 - [What's New in v0.5.1](#whats-new-in-v051)
 - [What's New in v0.5.0](#whats-new-in-v050)
@@ -91,6 +92,78 @@ That's it. The agent will read your files, propose changes, and ask for your app
 
 ---
 
+## What's New in v0.7.0
+
+### `claude-cli` provider — use your Claude subscription, no API key
+A new provider that drives [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) as a subprocess instead of hitting the Anthropic API directly. If you're already paying for Claude Pro/Team/Enterprise, you can now run `agentic` against that subscription — zero API spend, zero key management.
+
+```bash
+# 1. Install Claude Code CLI separately (https://docs.claude.com/en/docs/claude-code)
+# 2. Pick the provider
+agentic setup
+# → Choose: 5. Claude Code CLI (uses your Claude subscription)
+# → Pick model alias: haiku / sonnet / opus
+agentic
+```
+
+The provider runs Claude in a sandboxed sub-environment (`--strict-mcp-config`, `--exclude-dynamic-system-prompt-sections`, `--tools ""`) so its built-in tools, MCP servers, and CLAUDE.md context don't leak into your agentic session. Custom tool definitions are passed via a strict prompt protocol with a robust 5-format parser (`<tool_call>`, `<function_calls>`, `<function_call>`, `<invoke>`, and bare JSON arrays / objects).
+
+Sonnet and Opus follow the protocol cleanly. Haiku is supported but more variance is expected on tool format.
+
+### Polished response rendering (Claude Code style)
+The agent reply panel was redesigned. The `╭─ agent / ╰─` box is gone. Final answers now render as:
+
+```text
+● Site created. Three files:
+
+  * index.html — Navigation, hero, features, contact, footer
+  * style.css  — Gradient navbar, responsive cards, animations
+  * script.js  — Demo toggle, smooth scroll, form handler
+```
+
+Bullet (`●`) prefix on the first line, two-space indent on continuations, fenced code blocks rendered flush-left so they stay triple-click copyable. Multi-step responses read like a senior engineer's standup, not a stream of XML.
+
+### Boxed startup banner
+A new banner replaces the four flat lines at startup:
+
+```text
+╭────────────────────────────────────────────────────────╮
+│ ◆ Agentic Terminal                              v0.7.0 │
+│ ─────────────────────────────────────────────────────  │
+│ provider claude-cli · sonnet                           │
+│ folder   ~/AI/dummy                                    │
+│ branch   ⎇ main                                        │
+╰────────────────────────────────────────────────────────╯
+  /help · commands    ctrl+c · cancel    ctrl+d · exit
+```
+
+Auto-fits terminal width (56–82 cols), shows version, provider, model, folder, and git branch.
+
+### Flag aliases for subcommands
+Because `agentic --setup` keeps reading like the right command, all four subcommands now have flag aliases:
+
+```bash
+agentic --setup       # same as: agentic setup
+agentic --providers   # same as: agentic providers
+agentic --models      # same as: agentic models
+agentic --config      # same as: agentic config
+```
+
+### `/setup` slash command
+You can now run the full setup wizard mid-session without exiting. The new live-provider machinery means `/provider` and `/model` actually swap the running provider instance instead of just updating config (this was a pre-existing bug).
+
+```text
+› /setup
+# wizard runs
+✓ provider=claude-cli model=sonnet
+› continue building the dashboard
+```
+
+### Tool-call parser hardening
+The Claude CLI provider's parser was rewritten to handle five different tool-call formats Claude can emit, plus aggressive cleanup of hallucinated `<result>` / `<thinking>` / `<tool_result>` blocks. Smaller models occasionally drop tool calls into raw JSON arrays — those now get caught by a balanced-brace scanner.
+
+---
+
 ## What's New in v0.6.0
 
 ### Polished tool-call cards
@@ -128,7 +201,7 @@ The protocol is popped on exit (and on abnormal exit via `process.on("exit")`) s
 ## What's New in v0.5.1
 
 ### Esc to interrupt a running turn
-Pressing **Esc** while the AI is thinking (or while it's executing tool calls) aborts the current turn and hands the prompt back to you instantly — no waiting for the model or network. The history stays valid: every in-flight tool call is recorded with `cancelled by user`, and the next message is auto-tagged with a resume hint so the model picks up exactly where it left off. Ctrl+C does the same thing. Works across all four providers (Gemini, Claude, OpenAI, Ollama).
+Pressing **Esc** while the AI is thinking (or while it's executing tool calls) aborts the current turn and hands the prompt back to you instantly — no waiting for the model or network. The history stays valid: every in-flight tool call is recorded with `cancelled by user`, and the next message is auto-tagged with a resume hint so the model picks up exactly where it left off. Ctrl+C does the same thing. Works across all five providers (Gemini, Claude, OpenAI, Ollama, Claude CLI).
 
 Under the hood: dual-path detection (`keypress` for post-readline and raw-byte `data` events for instant response), forced raw-mode while a turn is active so bare Esc isn't line-buffered, and `\x1b\x1b` / `\x1b` both accepted for terminal-compatibility.
 
@@ -248,7 +321,7 @@ After an interrupt, the next message you send is auto-tagged with a resume hint 
 |---------|-------------|
 | **Dual-mode input** | Shell commands and AI prompts in the same REPL, auto-classified. |
 | **Folder-scoped** | Every tool runs in your `cwd`. `cd` (as shell or slash) stays sticky across turns. |
-| **4 providers** | Gemini, Claude, OpenAI, or Ollama (local/self-hosted). |
+| **5 providers** | Gemini, Claude, OpenAI, Ollama (local/self-hosted), or Claude Code CLI (subscription auth). |
 | **Resumable interrupts** | Ctrl+C never leaves the conversation in a broken state; next message resumes. |
 | **Skills** | Auto-triggered reusable instruction sets per task type. Ships with `scaffold-web-app`. |
 | **MCP servers** | Connect external tools via Model Context Protocol. |
@@ -271,6 +344,7 @@ After an interrupt, the next message you send is auto-tagged with a resume hint 
 | `claude` | Yes | [console.anthropic.com](https://console.anthropic.com/) |
 | `openai` | Yes | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
 | `ollama` | No | [ollama.com](https://ollama.com/) — runs 100% locally |
+| `claude-cli` | No | [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) — uses your Claude subscription |
 
 Keys are stored at `~/.config/agentic-terminal/config.json` (chmod 600).
 
@@ -280,7 +354,32 @@ You can also set them as environment variables:
 export GEMINI_API_KEY=...        # or GOOGLE_API_KEY
 export ANTHROPIC_API_KEY=...     # or CLAUDE_API_KEY
 export OPENAI_API_KEY=...
+# claude-cli: no env var — uses your Claude Code login
 ```
+
+### `claude-cli` requirements
+
+The `claude-cli` provider shells out to the `claude` binary for each turn. Install Claude Code first:
+
+```bash
+# Verify Claude Code is on your PATH
+which claude && claude --version
+```
+
+Once installed and logged in (`claude` will prompt you on first run), pick the provider:
+
+```bash
+agentic setup    # choose: 5. Claude Code CLI
+agentic          # done
+```
+
+Model picker accepts the friendly aliases (`haiku`, `sonnet`, `opus`) or a fully-qualified ID (`claude-sonnet-4-6`). Override the binary path in `~/.config/agentic-terminal/config.json` via the `claudeCliBinary` field if `claude` isn't in your PATH.
+
+| Model | Tool-call reliability |
+|-------|------------------------|
+| `opus`   | Excellent — sticks to the prompted format |
+| `sonnet` | Excellent — recommended default |
+| `haiku`  | Good — occasionally drops to raw JSON; parser handles it |
 
 ---
 
@@ -413,7 +512,8 @@ Available while in an interactive session (`agentic` with no prompt):
 /mcp disconnect <name>   disconnect an MCP server
 /mcp tools [server]      list MCP tools (optionally filter by server)
 /model <id>              switch model mid-session
-/provider <name>         switch provider (gemini|claude|openai|ollama)
+/provider <name>         switch provider (gemini|claude|openai|ollama|claude-cli)
+/setup                   re-run interactive setup (no need to exit)
 /models                  list models for current provider
 /providers               list all providers
 /cd <path>               change working directory
@@ -441,10 +541,16 @@ agentic --version              show version
 
 Flags:
   --cwd <path>                 start in a specific directory
-  --provider <name>            override provider for this run
+  --provider <name>            override provider for this run (gemini|claude|openai|ollama|claude-cli)
   --model <id>                 override model for this run
   --yes                        auto-approve safe + dangerous tools
   --yes-unsafe                 auto-approve all tools including destructive
+
+Subcommand aliases:
+  --setup                      same as `agentic setup`
+  --providers                  same as `agentic providers`
+  --models                     same as `agentic models`
+  --config                     same as `agentic config`
 ```
 
 ---
@@ -457,16 +563,17 @@ Path: `~/.config/agentic-terminal/config.json` (chmod 0600).
 
 ```json
 {
-  "provider": "ollama",
+  "provider": "claude-cli",
   "geminiApiKey": "...",
   "claudeApiKey": "...",
   "openaiApiKey": "...",
-  "models": {
-    "gemini": "gemini-2.5-flash",
-    "claude": "claude-sonnet-4-5",
-    "openai": "gpt-4o-mini",
-    "ollama": "qwen2.5:latest"
-  },
+  "ollamaHost": "http://localhost:11434",
+  "claudeCliBinary": "claude",
+  "geminiModel": "gemini-2.5-flash",
+  "claudeModel": "claude-sonnet-4-5",
+  "openaiModel": "gpt-4o-mini",
+  "ollamaModel": "qwen2.5:latest",
+  "claudeCliModel": "sonnet",
   "autoApprove": false,
   "maxIterations": 25
 }
@@ -474,11 +581,13 @@ Path: `~/.config/agentic-terminal/config.json` (chmod 0600).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `provider` | `"gemini" \| "claude" \| "openai" \| "ollama"` | `gemini` | Active provider |
+| `provider` | `"gemini" \| "claude" \| "openai" \| "ollama" \| "claude-cli"` | `gemini` | Active provider |
 | `geminiApiKey` | string | — | Google AI Studio key |
 | `claudeApiKey` | string | — | Anthropic key |
 | `openaiApiKey` | string | — | OpenAI key |
-| `models.<provider>` | string | per-provider default | Active model per provider |
+| `ollamaHost` | string | `http://localhost:11434` | Ollama HTTP endpoint |
+| `claudeCliBinary` | string | `claude` | Path to the Claude Code CLI binary |
+| `geminiModel` / `claudeModel` / `openaiModel` / `ollamaModel` / `claudeCliModel` | string | per-provider default | Active model per provider |
 | `autoApprove` | bool | `false` | Auto-approve safe + dangerous (same as `--yes`) |
 | `maxIterations` | number | `25` | Max tool-call iterations per turn before giving up |
 

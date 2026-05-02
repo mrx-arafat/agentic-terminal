@@ -370,7 +370,7 @@ function renderBox(state: State, opts: InputOptions): { output: string; cursorUp
 
   const headerLeft = chalk.gray(" ") + chalk.cyan(shortCwd(opts.cwd));
   const headerRight = opts.branch ? chalk.yellow(`git:(${opts.branch})`) + " " : " ";
-  const headerCenter = opts.header ? chalk.gray(" · ") + chalk.gray(opts.header) : "";
+  const headerCenter = opts.header ? chalk.gray(" · ") + opts.header : "";
   const headerText = headerLeft + headerCenter + " ";
   const headerVis = visualLen(headerText) + visualLen(headerRight);
   const fillCount = Math.max(0, w - 2 - headerVis);
