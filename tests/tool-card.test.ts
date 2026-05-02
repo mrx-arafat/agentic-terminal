@@ -19,9 +19,9 @@ const stripAnsi = (s: string): string => s.replace(ANSI_RE, "");
 const baseArgs: Record<string, unknown> = {};
 
 describe("renderToolCard", () => {
-  it("renders a header-only card when bodyLines is empty", () => {
+  it("renders a header-only card with verb(arg) form", () => {
     const presentation: ToolPresentation = {
-      summary: "src/ui.ts (180 lines)",
+      summary: "src/ui.ts",
       bodyLines: [],
       chips: [],
     };
@@ -35,19 +35,18 @@ describe("renderToolCard", () => {
     });
     const plain = stripAnsi(out);
     expect(plain).toContain("●");
-    expect(plain).toContain("read_file");
-    expect(plain).toContain("src/ui.ts (180 lines)");
-    expect(plain).toContain("done");
-    expect(plain).toContain("0.1s");
+    expect(plain).toContain("Read");
+    expect(plain).toContain("(src/ui.ts)");
+    expect(plain).not.toContain("done");      // pill removed
+    expect(plain).not.toContain("0.1s");      // sub-2s duration hidden
     expect(plain).not.toContain("\n");
-    expect(plain).not.toContain("▏");
   });
 
-  it("renders body with gutter prefix on each line", () => {
+  it("renders body with 2-space indent on each line", () => {
     const presentation: ToolPresentation = {
       summary: "src/ui.ts",
       bodyLines: ["@@ -1,2 +1,2 @@", "- old line", "+ new line"],
-      chips: ["+1", "-1"],
+      chips: ["+1 -1"],
     };
     const out = renderToolCard({
       name: "edit_file",
@@ -60,17 +59,18 @@ describe("renderToolCard", () => {
     const plain = stripAnsi(out);
     const lines = plain.split("\n");
     expect(lines).toHaveLength(4);
-    expect(lines[1]).toContain("▏ ");
+    expect(lines[0]).toContain("Update");
+    expect(lines[0]).toContain("(src/ui.ts)");
+    expect(lines[1]).toMatch(/^ {2}/);
     expect(lines[1]).toContain("@@ -1,2 +1,2 @@");
-    expect(lines[2]).toContain("▏ ");
     expect(lines[2]).toContain("- old line");
     expect(lines[3]).toContain("+ new line");
   });
 
-  it("colorizes diff lines with ANSI escapes", () => {
+  it("colorizes diff add/del with truecolor bg", () => {
     const presentation: ToolPresentation = {
       summary: "",
-      bodyLines: ["@@ section @@", "+added", "-removed", "context"],
+      bodyLines: ["@@ section @@", "+added", "-removed", " context"],
       chips: [],
     };
     const out = renderToolCard({
@@ -81,15 +81,13 @@ describe("renderToolCard", () => {
       durationMs: 200,
       presentation,
     });
-    // ANSI escape present
-    expect(out).toMatch(ANSI_RE);
-    // Stripped form should preserve raw text
+    expect(out).toMatch(/\x1b\[\d/); // some background/foreground escape present
     expect(stripAnsi(out)).toContain("+added");
     expect(stripAnsi(out)).toContain("-removed");
     expect(stripAnsi(out)).toContain("context");
   });
 
-  it("renders failure card with red gutter and failed pill", () => {
+  it("renders failure card with red bar gutter on body", () => {
     const presentation: ToolPresentation = {
       summary: "npm run build",
       bodyLines: ["src/ui.ts(146,12): TS2304: Cannot find name 'renderCard'."],
@@ -105,10 +103,11 @@ describe("renderToolCard", () => {
     });
     const plain = stripAnsi(out);
     expect(plain).toContain("✕");
-    expect(plain).toContain("failed");
+    expect(plain).toContain("Bash");
+    expect(plain).toContain("(npm run build)");
     expect(plain).toContain("exit 1");
-    expect(plain).toContain("▏ ");
-    expect(plain).toContain("2.3s");
+    expect(plain).toContain("│ ");          // red bar gutter on failure body
+    expect(plain).toContain("2.3s");        // slow ops still show duration
   });
 
   it("does not truncate long bodies", () => {
@@ -127,7 +126,7 @@ describe("renderToolCard", () => {
       presentation,
     });
     const lines = stripAnsi(out).split("\n");
-    expect(lines).toHaveLength(501); // 1 header + 500 body
+    expect(lines).toHaveLength(501);
     expect(lines[500]).toContain("line 499");
   });
 
@@ -164,26 +163,20 @@ describe("renderToolCard", () => {
       durationMs: 100,
       presentation,
     });
-    // green ANSI 32, red ANSI 31
     expect(out).toMatch(/\x1b\[32m\+42\x1b\[/);
     expect(out).toMatch(/\x1b\[31m-7\x1b\[/);
   });
 
-  it("formats duration >10s with bold dim style", () => {
-    const presentation: ToolPresentation = {
-      summary: "",
-      bodyLines: [],
-      chips: [],
-    };
-    const out = renderToolCard({
-      name: "bash",
-      args: baseArgs,
-      state: "done",
-      result: "ok",
-      durationMs: 11_700,
-      presentation,
+  it("shows duration only on slow ops (>=2s)", () => {
+    const presentation: ToolPresentation = { summary: "", bodyLines: [], chips: [] };
+    const fast = renderToolCard({
+      name: "bash", args: baseArgs, state: "done", result: "ok", durationMs: 1500, presentation,
     });
-    expect(stripAnsi(out)).toContain("11.7s");
+    const slow = renderToolCard({
+      name: "bash", args: baseArgs, state: "done", result: "ok", durationMs: 11_700, presentation,
+    });
+    expect(stripAnsi(fast)).not.toContain("1.5s");
+    expect(stripAnsi(slow)).toContain("11.7s");
   });
 
   it("dims '… N more lines' continuations", () => {
@@ -201,19 +194,17 @@ describe("renderToolCard", () => {
       presentation,
     });
     expect(stripAnsi(out)).toContain("… 38 more lines");
-    // dim escape (ANSI 2) should be present somewhere
     expect(out).toMatch(/\x1b\[2m/);
   });
 });
 
 describe("renderRunningHeader", () => {
-  it("includes elapsed time formatted to one decimal", () => {
+  it("always shows elapsed time during a running call", () => {
     const presentation: ToolPresentation = { summary: "pytest -q", bodyLines: [], chips: [] };
     const out = renderRunningHeader("bash", baseArgs, "◐", 100, presentation);
     expect(stripAnsi(out)).toContain("0.1s");
-    expect(stripAnsi(out)).toContain("running");
-    expect(stripAnsi(out)).toContain("bash");
-    expect(stripAnsi(out)).toContain("pytest -q");
+    expect(stripAnsi(out)).toContain("Bash");
+    expect(stripAnsi(out)).toContain("(pytest -q)");
   });
 
   it("formats long elapsed times correctly", () => {
@@ -226,80 +217,6 @@ describe("renderRunningHeader", () => {
     const presentation: ToolPresentation = { summary: "", bodyLines: [], chips: [] };
     const out = renderRunningHeader("bash", baseArgs, "◓", 0, presentation);
     expect(stripAnsi(out)).toContain("◓");
-  });
-});
-
-describe("right-alignment based on terminal width", () => {
-  let original: number | undefined;
-  beforeEach(() => {
-    original = process.stdout.columns;
-  });
-  afterEach(() => {
-    Object.defineProperty(process.stdout, "columns", {
-      value: original,
-      configurable: true,
-      writable: true,
-    });
-  });
-
-  it("right-aligns pill+duration when columns is wide", () => {
-    Object.defineProperty(process.stdout, "columns", {
-      value: 100,
-      configurable: true,
-      writable: true,
-    });
-    const presentation: ToolPresentation = { summary: "x", bodyLines: [], chips: [] };
-    const out = renderToolCard({
-      name: "read_file",
-      args: baseArgs,
-      state: "done",
-      result: "ok",
-      durationMs: 100,
-      presentation,
-    });
-    const plain = stripAnsi(out);
-    // Many spaces between left and right when right-aligned to 100 cols.
-    expect(plain).toMatch(/ {5,}done/);
-    expect(plain.length).toBeGreaterThanOrEqual(80);
-  });
-
-  it("falls back to two-space separator on narrow widths", () => {
-    Object.defineProperty(process.stdout, "columns", {
-      value: 40,
-      configurable: true,
-      writable: true,
-    });
-    const presentation: ToolPresentation = { summary: "x", bodyLines: [], chips: [] };
-    const out = renderToolCard({
-      name: "read_file",
-      args: baseArgs,
-      state: "done",
-      result: "ok",
-      durationMs: 100,
-      presentation,
-    });
-    const plain = stripAnsi(out);
-    // No huge run of spaces in narrow mode
-    expect(plain).not.toMatch(/ {10,}/);
-    expect(plain).toContain("done");
-  });
-
-  it("falls back to two-space separator when columns is undefined", () => {
-    Object.defineProperty(process.stdout, "columns", {
-      value: undefined,
-      configurable: true,
-      writable: true,
-    });
-    const presentation: ToolPresentation = { summary: "", bodyLines: [], chips: [] };
-    const out = renderToolCard({
-      name: "x",
-      args: baseArgs,
-      state: "done",
-      result: "ok",
-      durationMs: 100,
-      presentation,
-    });
-    expect(stripAnsi(out)).toContain("done");
   });
 });
 

@@ -243,6 +243,36 @@ async function writeFile(args: Record<string, unknown>, ctx: ToolContext): Promi
   }
 }
 
+/** Unified diff w/ single hunk (works for edit_file's contiguous replace). */
+function makeUnifiedDiff(oldStr: string, newStr: string, ctx: number): string {
+  if (oldStr === newStr) return "";
+  const A = oldStr.split("\n");
+  const B = newStr.split("\n");
+  const maxCommon = Math.min(A.length, B.length);
+  let prefix = 0;
+  while (prefix < maxCommon && A[prefix] === B[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < maxCommon - prefix &&
+    A[A.length - 1 - suffix] === B[B.length - 1 - suffix]
+  ) suffix++;
+  const removed = A.slice(prefix, A.length - suffix);
+  const added = B.slice(prefix, B.length - suffix);
+  const ctxBeforeStart = Math.max(0, prefix - ctx);
+  const ctxBefore = A.slice(ctxBeforeStart, prefix);
+  const ctxAfter = A.slice(A.length - suffix, Math.min(A.length, A.length - suffix + ctx));
+  const oldStart = ctxBeforeStart + 1;
+  const newStart = ctxBeforeStart + 1;
+  const oldLen = ctxBefore.length + removed.length + ctxAfter.length;
+  const newLen = ctxBefore.length + added.length + ctxAfter.length;
+  const lines: string[] = [`@@ -${oldStart},${oldLen} +${newStart},${newLen} @@`];
+  for (const l of ctxBefore) lines.push(` ${l}`);
+  for (const l of removed) lines.push(`-${l}`);
+  for (const l of added) lines.push(`+${l}`);
+  for (const l of ctxAfter) lines.push(` ${l}`);
+  return lines.join("\n");
+}
+
 async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
   const p = String(args.path ?? "");
   const oldStr = String(args.old_string ?? "");
@@ -274,7 +304,8 @@ async function editFile(args: Record<string, unknown>, ctx: ToolContext): Promis
     if (count > 1) return `error: old_string matches ${count} times; add more surrounding context to make it unique`;
     const updated = existing.replace(oldStr, newStr);
     await fs.writeFile(abs, updated, "utf8");
-    return `ok: replaced 1 occurrence in ${abs}`;
+    const diff = makeUnifiedDiff(existing, updated, 3);
+    return `ok: replaced 1 occurrence in ${abs}${diff ? `\n${diff}` : ""}`;
   } catch (e) {
     return `error: ${(e as Error).message}`;
   }
@@ -509,14 +540,22 @@ async function multiEdit(args: Record<string, unknown>, ctx: ToolContext): Promi
 }
 
 async function todoWrite(args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
-  const raw = args.todos;
-  if (!Array.isArray(raw)) return "error: todos array required";
+  // Tolerate common misnamed arg keys from weaker models.
+  const raw = args.todos ?? args.tasks ?? args.items ?? args.list ?? args.todo_list;
+  if (!Array.isArray(raw)) {
+    const got = Object.keys(args).length > 0 ? ` (got keys: ${Object.keys(args).join(", ")})` : "";
+    return `error: todos array required${got}. Pass { todos: [{ content, status }, ...] }`;
+  }
   const list: TodoItem[] = [];
   for (let i = 0; i < raw.length; i++) {
-    const it = raw[i] as { id?: unknown; content?: unknown; status?: unknown };
-    const id = String(it?.id ?? i + 1);
-    const content = String(it?.content ?? "").trim();
-    const statusRaw = String(it?.status ?? "pending").trim();
+    const itAny = raw[i];
+    // Accept either object form OR bare string (treat as content).
+    const it = (typeof itAny === "string"
+      ? { content: itAny }
+      : (itAny ?? {})) as { id?: unknown; content?: unknown; task?: unknown; text?: unknown; title?: unknown; status?: unknown };
+    const id = String(it.id ?? i + 1);
+    const content = String(it.content ?? it.task ?? it.text ?? it.title ?? "").trim();
+    const statusRaw = String(it.status ?? "pending").trim();
     if (!content) return `error: todo #${i + 1} missing content`;
     const status = (["pending", "in_progress", "done"] as const).includes(statusRaw as "pending")
       ? (statusRaw as TodoItem["status"])

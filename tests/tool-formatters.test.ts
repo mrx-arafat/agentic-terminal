@@ -41,7 +41,7 @@ describe("presentTool — read_file / read", () => {
     const lines = Array.from({ length: 10 }, (_, i) => `   ${i + 1}\tline ${i + 1}`).join("\n");
     const p = presentTool("read", { path: "x.txt" }, lines, true);
     expect(p.bodyLines.length).toBe(5);
-    expect(p.bodyLines[4]).toMatch(/^… \d+ more$/);
+    expect(p.bodyLines[4]).toMatch(/^… \d+ more lines$/);
     expect(p.chips).toEqual(["10 lines"]);
   });
 
@@ -125,16 +125,17 @@ describe("presentTool — edit_file / apply_patch / multi_edit", () => {
       " end",
     ].join("\n");
     const p = presentTool("apply_patch", { path: "x" }, diff, true);
-    expect(p.bodyLines[0]).toMatch(/^@@/);
+    // First body line carries a line number + sign instead of the @@ header itself.
+    expect(p.bodyLines[0]).toMatch(/^\s*\d+\s[-+ ]/);
     expect(p.chips[0]).toMatch(/^\+\d+ -\d+$/);
   });
 
-  it("truncates long diff at 12 lines", () => {
+  it("truncates long diff at 16 lines", () => {
     const lines = ["@@ -1,20 +1,20 @@"];
     for (let i = 0; i < 20; i++) lines.push(`+added ${i}`);
     const p = presentTool("apply_patch", { path: "x" }, lines.join("\n"), true);
-    expect(p.bodyLines.length).toBe(13);
-    expect(p.bodyLines[12]).toMatch(/^… \d+ more$/);
+    expect(p.bodyLines.length).toBe(17);
+    expect(p.bodyLines[16]).toMatch(/^… \d+ more lines$/);
   });
 
   it("multi_edit succeeds header-only", () => {

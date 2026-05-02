@@ -28,6 +28,7 @@ Bring your own API key (Gemini, Claude, OpenAI), run fully local with Ollama, or
 
 - [Install](#install)
 - [Quick Start](#quick-start)
+- [What's New in v0.8.0](#whats-new-in-v080)
 - [What's New in v0.7.0](#whats-new-in-v070)
 - [What's New in v0.6.0](#whats-new-in-v060)
 - [What's New in v0.5.1](#whats-new-in-v051)
@@ -89,6 +90,70 @@ atx "debug the crash in production.log"
 ```
 
 That's it. The agent will read your files, propose changes, and ask for your approval before anything dangerous runs.
+
+---
+
+## What's New in v0.8.0
+
+### Production-grade tool-call rendering
+The tool-card UI got a full pass. Cards now read like Claude Code: terse, scannable, no visual noise.
+
+```text
+● Read(src/ui.ts)  13 lines
+     1  import chalk from "chalk";
+     2
+     3  const app = express();
+     4  const port = 3000;
+  … 9 more lines
+
+● Update(src/ui.ts)  +4 -0
+     7    res.json({ ok: true });
+     8  });
+     9
+    10 +app.get("/version", (_req, res) => {
+    11 +  res.json({ version: "0.1.0" });
+    12 +});
+    13 +
+    14   app.listen(port, () => {
+
+● Search(app.get)  2 matches in 1 file
+  ./app.ts:6:app.get("/health", (_req, res) => {
+  ./app.ts:10:app.get("/version", (_req, res) => {
+
+✕ Bash(node script.js)  exit 1   2.3s
+│ Error: boom
+│   at Object.<anonymous> (/script.js:3:7)
+```
+
+Specifically:
+
+- **Verb(arg) headers** — `Read(path)`, `Update(path)`, `Bash(cmd)`, `Search(pattern)`, `List(dir)`, `Write(path)`, `TodoWrite`, `ReadAll(dir)`. Bold verb, dim arg in parens. No more `read_file  src/ui.ts  done · 0.4s` doubled-up form.
+- **Right-side noise gone** — `done · 0.0s` removed. Duration only shows on slow ops (≥2 s) or while a call is running.
+- **Clean body indent** — 2-space indent on success cards; the `▏ ` gutter character is reserved for failures (red `│ ` bar) so errors stand out instantly.
+- **Inline numbered diff w/ truecolor backgrounds** — `edit_file` results emit a unified diff embedded in the result. The renderer parses `@@` hunks, attaches per-line numbers, and paints removed lines with a dark-red bg (`rgb(70,25,30)`) + light-red fg, added lines with a dark-green bg (`rgb(20,60,30)`) + light-green fg. Context lines stay dim. Falls back gracefully on terminals without truecolor.
+- **Bash exit-code aware** — non-zero `exit_code` flips the card to a red `✕` glyph with a red `│ ` gutter on the body, instead of contradicting itself with a green `●` and a red `exit 1` chip.
+
+### `read_file` count + rendering fixed
+- Line numbers were inconsistent — only blank rows got their numbers colorized. Now every row renders the line number in dim purple-grey (`rgb(110,110,130)`), matching the diff style.
+- The `… N more lines` indicator was wrong: it counted raw split entries (including the trailing-empty from `\n`) instead of actual numbered rows. Now it reports real hidden-line count.
+
+### `read_all` body shows file list, not content fragment
+Old behavior: dumped the first 4 lines of the concatenated output (which usually started with a `=== file (N bytes) ===` header and one content line) and added a misleading `… 365 more`. New behavior: extracts the per-file headers and renders them as a compact list — `index.html (1710 bytes)`, `script.js (892 bytes)`, etc.
+
+### `todo_write` is tolerant of weak-model arg shapes
+Smaller models often ship `tasks` / `items` / `list` / `todo_list` instead of the documented `todos` key, or pass bare strings instead of `{ content }` objects. All of these now work. The error message on a true failure includes the actually-received keys to guide the retry — no more loops of "todos array required" with no further context.
+
+### Plain-text startup banner (terminal-feel)
+The boxed startup banner from v0.7.0 is gone. The new banner is plain text, no borders — it reads as if it's part of the shell prompt instead of a popup:
+
+```text
+Agentic Terminal v0.8.0
+provider claude-cli · haiku
+folder   ~/AI/dummy
+branch   ⎇ main
+
+/help · commands    ctrl+c · cancel    ctrl+d · exit
+```
 
 ---
 
@@ -1144,7 +1209,7 @@ npm test                        # run all tests once
 npm run test:watch              # watch mode for development
 ```
 
-All 253 tests should pass. If they don't, open an issue.
+All 301 tests should pass. If they don't, open an issue.
 
 ---
 
@@ -1169,6 +1234,7 @@ All 253 tests should pass. If they don't, open an issue.
 - [x] Built-in `scaffold-web-app` skill for end-to-end project creation
 - [x] Polished tool-call cards with status pills, smart per-tool summaries, in-place spinner (v0.6.0)
 - [x] Shift+Enter newline via kitty keyboard protocol auto-enable (v0.6.0)
+- [x] Production-grade card rendering: `Verb(arg)` headers, inline numbered diffs w/ truecolor backgrounds, bash exit-aware glyphs (v0.8.0)
 - [ ] Streaming responses with live token rendering
 - [ ] MCP server spawning and live tool injection
 - [ ] More tools: `web_fetch`, `apply_patch`, `run_tests`

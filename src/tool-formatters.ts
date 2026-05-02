@@ -129,16 +129,23 @@ function presentRead(
 
   const allLines = splitLines(result);
   const moreMatch = result.match(/\[…\s*(\d+)\s*more\s*lines/);
-  const numberedCount = allLines.filter((l) => /^\s*\d+\t/.test(l)).length;
+  // Match numbered lines incl. blank-content rows ("   2\t" trims to "   2").
+  const numberedRe = /^\s*\d+(?:\t|$)/;
+  const isNumbered = (l: string): boolean => numberedRe.test(l);
+  const numberedCount = allLines.filter(isNumbered).length;
   const totalLines = numberedCount + (moreMatch ? Number(moreMatch[1]) : 0);
   const chips = totalLines > 0 ? [`${totalLines} line${totalLines === 1 ? "" : "s"}`] : [];
 
-  if (allLines.length <= 4) {
+  // Normalize "<num>\t<content>" → "<num>  <content>" so the renderer can
+  // colorize line numbers consistently with the diff form.
+  const normalize = (l: string): string => l.replace(/^(\s*\d+)\t/, "$1  ");
+
+  if (numberedCount <= 4) {
     return { summary, bodyLines: [], chips };
   }
-  const shown = takeNonEmpty(allLines, 4);
-  const remaining = allLines.length - shown.length;
-  const body = remaining > 0 ? [...shown, `… ${remaining} more`] : shown;
+  const shown = takeNonEmpty(allLines.filter(isNumbered), 4).map(normalize);
+  const remaining = numberedCount - shown.length;
+  const body = remaining > 0 ? [...shown, `… ${remaining} more lines`] : shown;
   return { summary, bodyLines: body, chips };
 }
 
@@ -152,15 +159,30 @@ function presentReadAll(
   if (result === null) return { summary, bodyLines: [], chips: [] };
   if (!ok) return { summary, bodyLines: errorBody(result), chips: [] };
 
-  const lines = splitLines(result);
   const headerMatch = result.match(/read_all:\s+(\d+)\s+file\(s\)/);
   const fileCount = headerMatch ? Number(headerMatch[1]) : 0;
   const chips = fileCount > 0 ? [`${fileCount} file${fileCount === 1 ? "" : "s"}`] : [];
 
+  // Extract the per-file headers ("=== name (N bytes) ===") instead of
+  // dumping mixed content+headers — far more useful at a glance.
+  const fileHeaders: string[] = [];
+  for (const raw of result.split("\n")) {
+    const m = raw.match(/^===\s+(.+?)\s+===$/);
+    if (m) fileHeaders.push(m[1]);
+  }
+  if (fileHeaders.length > 0) {
+    const shown = fileHeaders.slice(0, 8);
+    const remaining = fileHeaders.length - shown.length;
+    const body = remaining > 0 ? [...shown, `… ${remaining} more files`] : shown;
+    return { summary, bodyLines: body, chips };
+  }
+
+  // Fallback: small result, just dump.
+  const lines = splitLines(result);
   if (lines.length <= 4) return { summary, bodyLines: [], chips };
   const shown = takeNonEmpty(lines, 4);
   const remaining = lines.length - shown.length;
-  const body = remaining > 0 ? [...shown, `… ${remaining} more`] : shown;
+  const body = remaining > 0 ? [...shown, `… ${remaining} more lines`] : shown;
   return { summary, bodyLines: body, chips };
 }
 
@@ -184,6 +206,48 @@ function presentWriteFile(
     return { summary, bodyLines: [], chips };
   }
   return { summary, bodyLines: takeNonEmpty(splitLines(result), 4), chips };
+}
+
+/**
+ * Convert unified-diff text into line-numbered display lines.
+ * Emits "  <num>  <sign><content>" — sign = `+` `-` ` `.
+ * Number is the source line in the new file (added/context) or old file (removed).
+ */
+export function buildNumberedDiff(result: string): string[] {
+  const lines = result.split("\n");
+  const out: string[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+  const pad = (n: number, w: number): string => String(n).padStart(w, " ");
+  // First pass: figure out max line number (for column width)
+  let maxN = 1;
+  for (const l of lines) {
+    const m = l.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
+    if (m) maxN = Math.max(maxN, Number(m[1]), Number(m[2]));
+  }
+  const width = String(maxN + 200).length;
+  for (const raw of lines) {
+    const hh = raw.match(/^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/);
+    if (hh) {
+      oldLine = Number(hh[1]);
+      newLine = Number(hh[2]);
+      continue;
+    }
+    if (oldLine === 0 && newLine === 0) continue; // pre-hunk noise (---/+++)
+    if (raw.startsWith("---") || raw.startsWith("+++")) continue;
+    if (raw.startsWith("+")) {
+      out.push(`${pad(newLine, width)} +${raw.slice(1)}`);
+      newLine++;
+    } else if (raw.startsWith("-")) {
+      out.push(`${pad(oldLine, width)} -${raw.slice(1)}`);
+      oldLine++;
+    } else if (raw.startsWith(" ")) {
+      out.push(`${pad(newLine, width)}  ${raw.slice(1)}`);
+      oldLine++;
+      newLine++;
+    }
+  }
+  return out;
 }
 
 function parseDiffStat(result: string): { added: number; removed: number; hasDiff: boolean } {
@@ -236,13 +300,10 @@ function presentEditFile(
   else if (added || removed) chips.push(`+${added} -${removed}`);
 
   if (stat.hasDiff) {
-    const allLines = splitLines(result);
-    const hunkIdx = allLines.findIndex((l) => l.startsWith("@@"));
-    const start = hunkIdx >= 0 ? hunkIdx : 0;
-    const slice = allLines.slice(start);
-    const shown = slice.slice(0, 12);
-    const remaining = slice.length - shown.length;
-    const body = remaining > 0 ? [...shown, `… ${remaining} more`] : shown;
+    const numbered = buildNumberedDiff(result);
+    const shown = numbered.slice(0, 16);
+    const remaining = numbered.length - shown.length;
+    const body = remaining > 0 ? [...shown, `… ${remaining} more lines`] : shown;
     return { summary, bodyLines: body, chips };
   }
 

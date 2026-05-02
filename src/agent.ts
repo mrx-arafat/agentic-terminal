@@ -321,7 +321,9 @@ export async function runTurn(deps: AgentDeps, userInput: string): Promise<void>
           for (const k of parallelIdxs) {
             const call = response.toolCalls[k];
             const result = results[k] ?? "cancelled by user";
-            const isError = result === "cancelled by user" || result.startsWith("error:") || result.startsWith("rejected by user");
+            const isError = result === "cancelled by user"
+              || result.startsWith("rejected by user")
+              || isToolFailure(call.name, result);
             const card = startToolCard(call.name, call.args);
             card.finish(isError ? "failed" : "done", result);
           }
@@ -377,6 +379,19 @@ const PARALLEL_SAFE = new Set([
   "bg_list",
   "bg_logs",
 ]);
+
+/** Detect tool failure across diverse result formats:
+ *  - Generic: "error:" prefix
+ *  - bash/run_command/shell: non-zero "exit_code: N" line
+ */
+function isToolFailure(name: string, result: string): boolean {
+  if (result.startsWith("error:")) return true;
+  if (name === "bash" || name === "run_command" || name === "shell") {
+    const m = result.match(/^exit_code:\s*(-?\d+)/m);
+    if (m && m[1] !== "0") return true;
+  }
+  return false;
+}
 
 function canRunInParallel(
   call: ToolCall,
@@ -446,7 +461,7 @@ async function executeTool(
     const result = isMCP
       ? await mcp!.callTool(call.name, call.args)
       : await handler!(call.args, ctx);
-    const isError = result.startsWith("error:");
+    const isError = isToolFailure(call.name, result);
     card?.finish(isError ? "failed" : "done", result);
     return result;
   } catch (e) {

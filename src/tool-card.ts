@@ -13,9 +13,6 @@ export interface RenderCardInput {
   presentation?: ToolPresentation;
 }
 
-const ANSI_RE = /\x1b\[[0-9;]*m/g;
-const visibleLength = (s: string): number => s.replace(ANSI_RE, "").length;
-
 const formatDuration = (ms: number): string => {
   const seconds = ms / 1000;
   return `${seconds.toFixed(1)}s`;
@@ -36,40 +33,93 @@ const renderChips = (chips: string[]): string => {
   return chips.map(colorChip).join(sep);
 };
 
+// Truecolor backgrounds — subtle, like Warp/VSCode diff view.
+const BG_ADD = chalk.bgRgb(20, 60, 30);
+const BG_DEL = chalk.bgRgb(70, 25, 30);
+const FG_ADD = chalk.rgb(120, 230, 140);
+const FG_DEL = chalk.rgb(255, 140, 150);
+const FG_NUM = chalk.rgb(110, 110, 130);
+
+/**
+ * Numbered-diff lines emitted by buildNumberedDiff() are:
+ *   "<num> +<text>" | "<num> -<text>" | "<num>  <text>"
+ * Apply line-number gutter dim, bg color, and sign color across the row.
+ */
 const colorDiffLine = (line: string): string => {
   if (line.startsWith("@@")) return chalk.cyan(line);
   if (line.startsWith("+++") || line.startsWith("---")) return line;
-  if (line.startsWith("+")) return chalk.green(line);
-  if (line.startsWith("-")) return chalk.red(line);
-  if (line.startsWith("… ") || line === "…") return chalk.dim(line);
+  if (line.startsWith("… ") || line === "…" || /^…\s/.test(line)) return chalk.dim(line);
+  // Numbered form: "  142 +foo"
+  const m = line.match(/^(\s*)(\d+)\s([-+ ])(.*)$/);
+  if (m) {
+    const [, lead, num, sign, content] = m;
+    const numStr = `${lead}${FG_NUM(num)} `;
+    if (sign === "+") return numStr + BG_ADD(FG_ADD(`+${content}`));
+    if (sign === "-") return numStr + BG_DEL(FG_DEL(`-${content}`));
+    return numStr + chalk.dim(` ${content}`);
+  }
+  // Blank-context form (trailing space already stripped): "  142"
+  const blank = line.match(/^(\s*)(\d+)\s*$/);
+  if (blank) {
+    const [, lead, num] = blank;
+    return `${lead}${FG_NUM(num)}`;
+  }
+  // Plain unified-diff fallback
+  if (line.startsWith("+")) return BG_ADD(FG_ADD(line));
+  if (line.startsWith("-")) return BG_DEL(FG_DEL(line));
   return line;
 };
 
+/** Map raw tool names to short verb form (Claude-Code style). */
+const DISPLAY_NAME: Record<string, string> = {
+  read_file: "Read",
+  read: "Read",
+  read_all: "ReadAll",
+  write_file: "Write",
+  edit_file: "Update",
+  multi_edit: "Update",
+  apply_patch: "Update",
+  bash: "Bash",
+  run_command: "Bash",
+  shell: "Bash",
+  grep: "Search",
+  glob: "Glob",
+  list_dir: "List",
+  todo_write: "TodoWrite",
+};
+
+const displayName = (name: string): string => {
+  if (DISPLAY_NAME[name]) return DISPLAY_NAME[name];
+  if (name.startsWith("bg_")) {
+    const rest = name.slice(3);
+    return "Bg" + rest.charAt(0).toUpperCase() + rest.slice(1);
+  }
+  return name;
+};
+
+/** Build header: `● Verb(arg)  +chip -chip   <dim duration on slow>` */
 const buildHeaderLine = (
   glyph: string,
-  name: string,
+  rawName: string,
   summary: string,
   chips: string[],
-  pillText: string,
-  pillColor: (s: string) => string,
   durationMs: number,
+  showRunning: boolean,
 ): string => {
-  const left: string[] = [glyph, " ", chalk.bold(name)];
-  if (summary.length > 0) left.push("  ", chalk.gray(summary));
-  if (chips.length > 0) left.push("  ", renderChips(chips));
+  const verb = chalk.bold(displayName(rawName));
+  const argInParen = summary.length > 0 ? chalk.gray(`(${summary})`) : "";
+  const parts: string[] = [glyph, " ", verb, argInParen];
+  if (chips.length > 0) parts.push("  ", renderChips(chips));
 
-  const durStr = formatDuration(durationMs);
-  const dur = durationMs > 10_000 ? chalk.bold.dim(durStr) : chalk.dim(durStr);
-  const right = `${pillColor(pillText)} ${chalk.dim("·")} ${dur}`;
-
-  const leftStr = left.join("");
-  const cols = process.stdout.columns;
-  if (typeof cols === "number" && cols >= 60) {
-    const used = visibleLength(leftStr) + visibleLength(right);
-    const pad = Math.max(2, cols - used);
-    return `${leftStr}${" ".repeat(pad)}${right}`;
+  // Duration: only show when running (live spinner) OR slow (>2s).
+  if (showRunning) {
+    parts.push("  ", chalk.dim(formatDuration(durationMs)));
+  } else if (durationMs >= 2000) {
+    const durStr = formatDuration(durationMs);
+    const dur = durationMs > 10_000 ? chalk.bold.dim(durStr) : chalk.dim(durStr);
+    parts.push("  ", dur);
   }
-  return `${leftStr}  ${right}`;
+  return parts.join("");
 };
 
 /** Render a complete tool card (header + body) to a string. No trailing newline. */
@@ -79,24 +129,22 @@ export function renderToolCard(input: RenderCardInput): string {
     input.presentation ?? presentTool(input.name, input.args, input.result, ok);
 
   const glyph = ok ? chalk.green("●") : chalk.red("✕");
-  const pillText = ok ? "done" : "failed";
-  const pillColor = ok ? chalk.green : chalk.red;
 
   const header = buildHeaderLine(
     glyph,
     input.name,
     presentation.summary,
     presentation.chips,
-    pillText,
-    pillColor,
     input.durationMs,
+    false,
   );
 
   if (presentation.bodyLines.length === 0) return header;
 
-  const gutter = ok ? chalk.gray("▏ ") : chalk.red("▏ ");
+  // Body: 2-space indent (no character gutter). Errors get a subtle red bar.
+  const indent = ok ? "  " : chalk.red("│ ");
   const body = presentation.bodyLines
-    .map((raw) => `${gutter}${colorDiffLine(raw.replace(/\s+$/, ""))}`)
+    .map((raw) => `${indent}${colorDiffLine(raw.replace(/\s+$/, ""))}`)
     .join("\n");
 
   return `${header}\n${body}`;
@@ -117,9 +165,8 @@ export function renderRunningHeader(
     name,
     pres.summary,
     pres.chips,
-    "running",
-    chalk.cyan,
     elapsedMs,
+    true,
   );
 }
 
