@@ -113,57 +113,34 @@ export function renderMarkdown(text: string): string {
   return `\n${result}`;
 }
 
-const ANSI_RE_BANNER = /\x1b\[[0-9;]*m/g;
-const visibleWidth = (s: string): number => s.replace(ANSI_RE_BANNER, "").length;
-
 export interface BannerInfo {
   version?: string;
   branch?: string;
 }
 
 export function banner(providerName: string, model: string, cwd: string, info: BannerInfo = {}): string {
-  const cols = process.stdout.columns ?? 100;
-  const width = Math.max(56, Math.min(82, cols - 2));
-
   const home = process.env.HOME ?? os.homedir();
   const folder = cwd.startsWith(home) ? "~" + cwd.slice(home.length) : cwd;
 
-  const title = chalk.bold.cyan("◆ Agentic Terminal");
-  const ver = info.version ? chalk.dim(`v${info.version}`) : "";
+  const ver = info.version ? chalk.dim(` v${info.version}`) : "";
+  const title = chalk.bold("Agentic Terminal") + ver;
 
   const providerVal = `${chalk.bold.green(providerName)} ${chalk.dim("·")} ${chalk.cyan(model)}`;
   const folderVal = chalk.white(folder);
   const branchVal = info.branch ? chalk.yellow("⎇ " + info.branch) : chalk.dim("(no git)");
 
-  const inner = width - 4;
   const labelW = 9;
-  const fmtRow = (label: string, value: string): string =>
+  const row = (label: string, value: string): string =>
     chalk.dim(label.padEnd(labelW)) + value;
-
-  const padInner = (left: string, right: string): string => {
-    const used = visibleWidth(left) + visibleWidth(right);
-    const pad = Math.max(1, inner - used);
-    return left + " ".repeat(pad) + right;
-  };
-
-  const side = chalk.gray("│");
-  const top = chalk.gray("╭" + "─".repeat(width - 2) + "╮");
-  const bottom = chalk.gray("╰" + "─".repeat(width - 2) + "╯");
-  const row = (content: string): string => {
-    const pad = Math.max(0, inner - visibleWidth(content));
-    return `${side} ${content}${" ".repeat(pad)} ${side}`;
-  };
 
   const lines = [
     "",
-    top,
-    row(padInner(title, ver)),
-    row(chalk.gray("─".repeat(inner))),
-    row(fmtRow("provider", providerVal)),
-    row(fmtRow("folder",   folderVal)),
-    row(fmtRow("branch",   branchVal)),
-    bottom,
-    chalk.dim("  /help · commands    ctrl+c · cancel    ctrl+d · exit"),
+    title,
+    row("provider", providerVal),
+    row("folder", folderVal),
+    row("branch", branchVal),
+    "",
+    chalk.dim("/help · commands    ctrl+c · cancel    ctrl+d · exit"),
     "",
   ];
   return lines.join("\n");
